@@ -11,9 +11,28 @@ factories, controller, host code, and provider bridge load on first `/code-mode 
 
 ## Install
 
+Install directly from GitHub:
+
+```sh
+pi install git:github.com/trungnt13/pi-code-mode
+```
+
+Pin a tag or commit when reproducibility matters:
+
+```sh
+pi install git:github.com/trungnt13/pi-code-mode@<tag-or-commit>
+```
+
+Pi loads `src/index.ts` directly through its TypeScript extension loader. No
+manual dependency install or build is required. Restart Pi or run `/reload`,
+then use `/code-mode status` to verify the extension loaded. Code mode remains
+off until `/code-mode on` succeeds.
+
+For local development:
+
 ```sh
 npm install
-npm run build
+npm run check
 pi install /absolute/path/to/pi-code-mode
 ```
 
@@ -38,22 +57,9 @@ export PI_CODE_MODE_HOST_PLATFORM=darwin
 export PI_CODE_MODE_HOST_ARCH=arm64
 ```
 
-Factory users may pass same complete identity:
-
-```ts
-import { createCodeModeExtension } from "pi-code-mode";
-
-export default createCodeModeExtension({
-  inputMode: "auto",
-  host: {
-    executablePath: "/absolute/canonical/path/to/codex-code-mode-host",
-    sha256: "...",
-    sizeBytes: 123,
-    platform: "darwin",
-    architecture: "arm64",
-  },
-});
-```
+Advanced repository-local wrappers may import `createCodeModeExtension` from
+`src/index.ts` and pass the same complete identity. This Git package is a Pi
+source extension, not a compiled Node library.
 
 `inputMode` accepts:
 

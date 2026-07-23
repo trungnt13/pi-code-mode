@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Verify install from clean Git checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          clone="$RUNNER_TEMP/pi-code-mode"
+          config="$RUNNER_TEMP/pi-agent-local"
+          git clone --no-local "$GITHUB_WORKSPACE" "$clone"
+          PI_CODING_AGENT_DIR="$config" ./node_modules/.bin/pi install "$clone"
+          PI_CODING_AGENT_DIR="$config" npm run verify:installed
+
+  verify-remote-git-install:
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - run: npm ci
+      - name: Verify install from pushed GitHub commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/pi-agent-remote"
+          PI_CODING_AGENT_DIR="$config" ./node_modules/.bin/pi install "git:github.com/${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          PI_CODING_AGENT_DIR="$config" npm run verify:installed

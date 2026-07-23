@@ -12,16 +12,8 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
-		}
-	},
 	"files": [
-		"dist",
+		"src",
 		"vendor",
 		"ARCHITECTURE.md",
 		"LICENSE",
@@ -31,7 +23,7 @@
 	],
 	"pi": {
 		"extensions": [
-			"./dist/index.js"
+			"./src/index.ts"
 		]
 	},
 	"scripts": {
@@ -39,6 +31,9 @@
 		"typecheck": "tsc --noEmit",
 		"build": "npm run clean && tsc -p tsconfig.build.json",
 		"lint": "biome check src",
+		"verify:package": "node scripts/verify-pi-package.mjs",
+		"verify:installed": "node scripts/verify-pi-package.mjs --installed",
+		"check": "npm run lint && npm run typecheck && npm run verify:package",
 		"format": "biome format --write src"
 	},
 	"peerDependencies": {
