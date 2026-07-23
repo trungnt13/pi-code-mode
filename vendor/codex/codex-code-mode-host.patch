@@ -1,0 +1,2686 @@
+diff --git a/codex-rs/code-mode-host/src/delegate.rs b/codex-rs/code-mode-host/src/delegate.rs
+index 50d45e7de7..48fc65d092 100644
+--- a/codex-rs/code-mode-host/src/delegate.rs
++++ b/codex-rs/code-mode-host/src/delegate.rs
+@@ -8,6 +8,7 @@ use codex_code_mode_protocol::ToolInvocationFuture;
+ use codex_code_mode_protocol::host::DelegateRequest;
+ use codex_code_mode_protocol::host::DelegateResponse;
+ use codex_code_mode_protocol::host::SessionId;
++use tokio::sync::Semaphore;
+ use tokio_util::sync::CancellationToken;
+ 
+ use crate::peer::HostPeer;
+@@ -15,11 +16,20 @@ use crate::peer::HostPeer;
+ pub(super) struct RemoteDelegate {
+     session_id: SessionId,
+     peer: Arc<HostPeer>,
++    permits: Option<Arc<Semaphore>>,
+ }
+ 
+ impl RemoteDelegate {
+-    pub(super) fn new(session_id: SessionId, peer: Arc<HostPeer>) -> Self {
+-        Self { session_id, peer }
++    pub(super) fn new(
++        session_id: SessionId,
++        peer: Arc<HostPeer>,
++        max_calls: Option<usize>,
++    ) -> Self {
++        Self {
++            session_id,
++            peer,
++            permits: max_calls.map(|max_calls| Arc::new(Semaphore::new(max_calls))),
++        }
+     }
+ }
+ 
+@@ -30,6 +40,14 @@ impl CodeModeSessionDelegate for RemoteDelegate {
+         cancellation_token: CancellationToken,
+     ) -> ToolInvocationFuture<'a> {
+         Box::pin(async move {
++            let _permit = match &self.permits {
++                Some(permits) => Some(
++                    Arc::clone(permits)
++                        .try_acquire_owned()
++                        .map_err(|_| "code-mode session has too many delegate calls".to_string())?,
++                ),
++                None => None,
++            };
+             match self
+                 .peer
+                 .call(
+@@ -57,6 +75,14 @@ impl CodeModeSessionDelegate for RemoteDelegate {
+         cancellation_token: CancellationToken,
+     ) -> NotificationFuture<'a> {
+         Box::pin(async move {
++            let _permit = match &self.permits {
++                Some(permits) => Some(
++                    Arc::clone(permits)
++                        .try_acquire_owned()
++                        .map_err(|_| "code-mode session has too many delegate calls".to_string())?,
++                ),
++                None => None,
++            };
+             match self
+                 .peer
+                 .call(
+diff --git a/codex-rs/code-mode-host/src/host_tests.rs b/codex-rs/code-mode-host/src/host_tests.rs
+index b189b89e09..4f89d8980a 100644
+--- a/codex-rs/code-mode-host/src/host_tests.rs
++++ b/codex-rs/code-mode-host/src/host_tests.rs
+@@ -2,7 +2,6 @@ use codex_code_mode_protocol::host::Capability;
+ use codex_code_mode_protocol::host::CapabilitySet;
+ use codex_code_mode_protocol::host::ClientHello;
+ use codex_code_mode_protocol::host::ClientToHost;
+-use codex_code_mode_protocol::host::EncodedFrame;
+ use codex_code_mode_protocol::host::FramedReader;
+ use codex_code_mode_protocol::host::FramedWriter;
+ use codex_code_mode_protocol::host::HandshakeRejectReason;
+@@ -30,6 +29,7 @@ use super::RequestKind;
+ use super::RequestRegistry;
+ use super::SeenSessionIds;
+ use super::peer::HostPeer;
++use super::peer::OutgoingFrame;
+ use super::run;
+ 
+ fn client_hello(
+@@ -54,7 +54,8 @@ fn request_id(value: i64) -> RequestId {
+     RequestId::new(value)
+ }
+ 
+-async fn decode_frame(frame: EncodedFrame) -> HostToClient {
++async fn decode_frame(outgoing: OutgoingFrame) -> HostToClient {
++    let OutgoingFrame { frame, written_tx } = outgoing;
+     let (reader, writer) = tokio::io::duplex(/*max_buf_size*/ 4096);
+     let writer = tokio::spawn(async move {
+         FramedWriter::new(writer)
+@@ -68,6 +69,9 @@ async fn decode_frame(frame: EncodedFrame) -> HostToClient {
+         .expect("read encoded frame")
+         .expect("encoded frame message");
+     writer.await.expect("frame writer task");
++    if let Some(written_tx) = written_tx {
++        let _ = written_tx.send(Ok(()));
++    }
+     message
+ }
+ 
+@@ -111,6 +115,7 @@ async fn handshake_and_multiple_session_lifecycles_are_ordered() {
+                 id: request_id,
+                 request: HostRequest::OpenSession {
+                     session_id: session_id(id),
++                    limits: None,
+                 },
+             })
+             .await
+@@ -122,6 +127,7 @@ async fn handshake_and_multiple_session_lifecycles_are_ordered() {
+                 result: WireResult::Ok {
+                     value: HostResponse::SessionReady {
+                         session_id: session_id(id),
++                        limits: None,
+                     },
+                 },
+             })
+@@ -195,6 +201,7 @@ async fn incompatible_or_invalid_handshake_is_rejected() {
+             id: request_id(/*value*/ 1),
+             request: HostRequest::OpenSession {
+                 session_id: session_id("session-1"),
++                limits: None,
+             },
+         })
+         .await
+@@ -260,6 +267,7 @@ async fn session_id_cannot_be_reused_after_shutdown() {
+             request_id(/*value*/ 1),
+             HostRequest::OpenSession {
+                 session_id: id.clone(),
++                limits: None,
+             },
+         ),
+         (
+@@ -285,7 +293,10 @@ async fn session_id_cannot_be_reused_after_shutdown() {
+     writer
+         .write(&ClientToHost::Request {
+             id: request_id(/*value*/ 3),
+-            request: HostRequest::OpenSession { session_id: id },
++            request: HostRequest::OpenSession {
++                session_id: id,
++                limits: None,
++            },
+         })
+         .await
+         .expect("reuse session ID");
+@@ -342,6 +353,7 @@ async fn request_task_panic_disconnects_host() {
+         active_cell_permits: Arc::new(Semaphore::new(MAX_ACTIVE_CELLS)),
+         closing: AtomicBool::new(false),
+         peer: Arc::clone(&peer),
++        resource_limits_selected: false,
+     };
+     let task = state.request_tasks.spawn(async {
+         panic!("request panic probe");
+@@ -371,10 +383,11 @@ async fn execute_request_id_remains_active_until_initial_response() {
+         active_cell_permits: Arc::new(Semaphore::new(MAX_ACTIVE_CELLS)),
+         closing: AtomicBool::new(false),
+         peer,
++        resource_limits_selected: false,
+     });
+     let session_id = session_id("session-1");
+     state
+-        .open_session(session_id.clone())
++        .open_session(session_id.clone(), /*limits*/ None)
+         .expect("open session");
+     let request_id = request_id(/*value*/ 1);
+ 
+@@ -384,6 +397,7 @@ async fn execute_request_id_remains_active_until_initial_response() {
+             HostRequest::Execute {
+                 session_id: session_id.clone(),
+                 request: execute_request("await new Promise(() => {});"),
++                limits: None,
+             },
+         )
+         .expect("spawn execute request");
+@@ -392,7 +406,11 @@ async fn execute_request_id_remains_active_until_initial_response() {
+         id,
+         result:
+             WireResult::Ok {
+-                value: HostResponse::ExecutionStarted { cell_id },
++                value:
++                    HostResponse::ExecutionStarted {
++                        cell_id,
++                        limits: None,
++                    },
+             },
+     } = started
+     else {
+@@ -411,6 +429,7 @@ async fn execute_request_id_remains_active_until_initial_response() {
+     state
+         .session(&session_id)
+         .expect("session")
++        .runtime
+         .terminate(cell_id.into())
+         .await
+         .expect("terminate cell");
+@@ -430,10 +449,11 @@ async fn active_cell_limit_rejects_execute_without_disconnecting() {
+         active_cell_permits: Arc::new(Semaphore::new(/*permits*/ 0)),
+         closing: AtomicBool::new(false),
+         peer: Arc::clone(&peer),
++        resource_limits_selected: false,
+     };
+     let session_id = session_id("session-1");
+     state
+-        .open_session(session_id.clone())
++        .open_session(session_id.clone(), /*limits*/ None)
+         .expect("open session");
+     let request_id = request_id(/*value*/ 1);
+ 
+@@ -443,6 +463,7 @@ async fn active_cell_limit_rejects_execute_without_disconnecting() {
+             HostRequest::Execute {
+                 session_id,
+                 request: execute_request("text(\"hello\");"),
++                limits: None,
+             },
+             CancellationToken::new(),
+         )
+diff --git a/codex-rs/code-mode-host/src/lib.rs b/codex-rs/code-mode-host/src/lib.rs
+index d2c1f507b4..bce896688f 100644
+--- a/codex-rs/code-mode-host/src/lib.rs
++++ b/codex-rs/code-mode-host/src/lib.rs
+@@ -1,6 +1,7 @@
+ use std::collections::HashMap;
+ use std::collections::HashSet;
+ use std::collections::VecDeque;
++use std::num::NonZeroU32;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::PoisonError;
+@@ -11,7 +12,9 @@ use std::time::Duration;
+ use anyhow::Context;
+ use anyhow::Result;
+ use codex_code_mode::InProcessCodeModeSession;
++use codex_code_mode_protocol::host::Capability;
+ use codex_code_mode_protocol::host::CapabilitySet;
++use codex_code_mode_protocol::host::CellLimits;
+ use codex_code_mode_protocol::host::ClientToHost;
+ use codex_code_mode_protocol::host::EncodedFrame;
+ use codex_code_mode_protocol::host::FramedReader;
+@@ -21,12 +24,17 @@ use codex_code_mode_protocol::host::HostHello;
+ use codex_code_mode_protocol::host::HostRequest;
+ use codex_code_mode_protocol::host::HostResponse;
+ use codex_code_mode_protocol::host::HostToClient;
++use codex_code_mode_protocol::host::MAX_FRAME_BYTES;
++use codex_code_mode_protocol::host::ProcessLimits;
+ use codex_code_mode_protocol::host::ProtocolVersion;
++use codex_code_mode_protocol::host::RESOURCE_LIMITS_V1;
+ use codex_code_mode_protocol::host::RequestId;
+ use codex_code_mode_protocol::host::SessionId;
++use codex_code_mode_protocol::host::SessionLimits;
+ use codex_code_mode_protocol::host::SupportedProtocolVersions;
+ use tokio::io::AsyncRead;
+ use tokio::io::AsyncWrite;
++use tokio::sync::OwnedSemaphorePermit;
+ use tokio::sync::Semaphore;
+ use tokio::sync::mpsc;
+ use tokio_util::sync::CancellationToken;
+@@ -34,12 +42,21 @@ use tokio_util::task::TaskTracker;
+ 
+ use self::delegate::RemoteDelegate;
+ use self::peer::HostPeer;
++use self::peer::OutgoingFrame;
+ 
+ mod delegate;
+ mod peer;
+ 
+ const MAX_IN_FLIGHT_REQUESTS: usize = 256;
+ const MAX_ACTIVE_CELLS: usize = 128;
++const MAX_OPEN_SESSIONS: usize = 64;
++const MAX_COMMITTED_STATE_BYTES_PER_SESSION: u32 = 4 * 1024 * 1024;
++const MAX_CELL_HEAP_BYTES: u32 = 64 * 1024 * 1024;
++const MAX_CELL_WALL_TIME_MS: u32 = 60_000;
++const MAX_CELL_TIMERS: u32 = 16;
++const MAX_CELL_OUTPUT_BYTES: u32 = 4 * 1024 * 1024;
++const MAX_DELEGATE_RESULT_BYTES: u32 = 4 * 1024 * 1024;
++const MAX_TOOL_DEFINITION_BYTES: u32 = 1024 * 1024;
+ const MAX_RECENT_REQUEST_IDS: usize = 4096;
+ const MAX_RECENT_SESSION_IDS: usize = 4096;
+ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+@@ -57,11 +74,11 @@ where
+ {
+     let mut reader = FramedReader::new(reader);
+     let mut writer = FramedWriter::new(writer);
+-    if !negotiate(&mut reader, &mut writer).await? {
++    let Some(resource_limits_selected) = negotiate(&mut reader, &mut writer).await? else {
+         return Ok(());
+-    }
++    };
+ 
+-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<EncodedFrame>(/*max_capacity*/ 128);
++    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingFrame>(/*max_capacity*/ 128);
+     let peer = Arc::new(HostPeer::new(outgoing_tx));
+     let state = Arc::new(HostState {
+         sessions: Mutex::new(HashMap::new()),
+@@ -72,22 +89,29 @@ where
+         active_cell_permits: Arc::new(Semaphore::new(MAX_ACTIVE_CELLS)),
+         closing: AtomicBool::new(false),
+         peer: Arc::clone(&peer),
++        resource_limits_selected,
+     });
+     let writer_disconnected = peer.disconnection_token();
+     let writer_task = tokio::spawn(async move {
+         loop {
+             tokio::select! {
+                 _ = writer_disconnected.cancelled() => return Ok::<(), anyhow::Error>(()),
+-                frame = outgoing_rx.recv() => {
+-                    let Some(frame) = frame else {
++                outgoing = outgoing_rx.recv() => {
++                    let Some(outgoing) = outgoing else {
+                         return Ok(());
+                     };
+-                    if let Err(err) = writer.write_frame(&frame).await {
++                    if let Err(err) = writer.write_frame(&outgoing.frame).await {
++                        if let Some(written_tx) = outgoing.written_tx {
++                            let _ = written_tx.send(Err(err.to_string()));
++                        }
+                         return Err(
+                             anyhow::Error::new(err)
+                                 .context("failed to write code-mode host message")
+                         );
+                     }
++                    if let Some(written_tx) = outgoing.written_tx {
++                        let _ = written_tx.send(Ok(()));
++                    }
+                 }
+             }
+         }
+@@ -158,7 +182,10 @@ where
+     Ok(())
+ }
+ 
+-async fn negotiate<R, W>(reader: &mut FramedReader<R>, writer: &mut FramedWriter<W>) -> Result<bool>
++async fn negotiate<R, W>(
++    reader: &mut FramedReader<R>,
++    writer: &mut FramedWriter<W>,
++) -> Result<Option<bool>>
+ where
+     R: AsyncRead + Unpin,
+     W: AsyncWrite + Unpin,
+@@ -168,7 +195,7 @@ where
+         .await
+         .context("failed to read code-mode client hello")?
+     else {
+-        return Ok(false);
++        return Ok(None);
+     };
+     let ClientToHost::ClientHello(client_hello) = first_message else {
+         writer
+@@ -179,7 +206,7 @@ where
+             })
+             .await
+             .context("failed to reject invalid code-mode client hello")?;
+-        return Ok(false);
++        return Ok(None);
+     };
+ 
+     let supported_versions = SupportedProtocolVersions::try_new([ProtocolVersion::V1])?;
+@@ -193,10 +220,11 @@ where
+             })
+             .await
+             .context("failed to reject incompatible code-mode client")?;
+-        return Ok(false);
++        return Ok(None);
+     }
+ 
+-    let host_capabilities = CapabilitySet::empty();
++    let resource_limits = Capability::new(RESOURCE_LIMITS_V1)?;
++    let host_capabilities = CapabilitySet::try_new([resource_limits.clone()])?;
+     if let Some(capability) = client_hello
+         .required_capabilities()
+         .iter()
+@@ -210,21 +238,77 @@ where
+             })
+             .await
+             .context("failed to reject unsupported code-mode capability")?;
+-        return Ok(false);
++        return Ok(None);
+     }
+ 
++    let selected = client_hello
++        .required_capabilities()
++        .contains(&resource_limits)
++        || client_hello
++            .optional_capabilities()
++            .contains(&resource_limits);
++    let selected_capabilities = if selected {
++        CapabilitySet::try_new([resource_limits])?
++    } else {
++        CapabilitySet::empty()
++    };
++
++    let hello = if selected {
++        HostHello::with_process_limits(ProtocolVersion::V1, selected_capabilities, process_limits())
++    } else {
++        HostHello::new(ProtocolVersion::V1, selected_capabilities)
++    };
+     writer
+-        .write(&HostToClient::HostHello(HostHello::new(
+-            ProtocolVersion::V1,
+-            host_capabilities,
+-        )))
++        .write(&HostToClient::HostHello(hello))
+         .await
+         .context("failed to write code-mode host hello")?;
+-    Ok(true)
++    Ok(Some(selected))
++}
++
++fn process_limits() -> ProcessLimits {
++    ProcessLimits {
++        max_frame_bytes: nonzero(MAX_FRAME_BYTES as u32),
++        max_open_sessions: nonzero(MAX_OPEN_SESSIONS as u32),
++        max_committed_state_bytes_per_session: nonzero(MAX_COMMITTED_STATE_BYTES_PER_SESSION),
++        max_active_cells: nonzero(MAX_ACTIVE_CELLS as u32),
++        max_in_flight_operations: nonzero(MAX_IN_FLIGHT_REQUESTS as u32),
++        max_delegate_calls: nonzero(256),
++        max_cell_limits: CellLimits {
++            heap_bytes: nonzero(MAX_CELL_HEAP_BYTES),
++            wall_time_ms: nonzero(MAX_CELL_WALL_TIME_MS),
++            pending_timers: nonzero(MAX_CELL_TIMERS),
++            output_bytes: nonzero(MAX_CELL_OUTPUT_BYTES),
++            delegate_result_bytes: nonzero(MAX_DELEGATE_RESULT_BYTES),
++            tool_definition_bytes: nonzero(MAX_TOOL_DEFINITION_BYTES),
++        },
++    }
++}
++
++const fn nonzero(value: u32) -> NonZeroU32 {
++    match NonZeroU32::new(value) {
++        Some(value) => value,
++        None => panic!("resource limit must be positive"),
++    }
++}
++
++struct HostSession {
++    runtime: Arc<InProcessCodeModeSession>,
++    limits: Option<SessionLimits>,
++    active_cell_permits: Option<Arc<Semaphore>>,
++    start_gate: Arc<Semaphore>,
++}
++
++impl HostSession {
++    async fn acquire_start_gate(&self) -> Result<OwnedSemaphorePermit, String> {
++        Arc::clone(&self.start_gate)
++            .acquire_owned()
++            .await
++            .map_err(|_| "code-mode session start gate closed".to_string())
++    }
+ }
+ 
+ struct HostState {
+-    sessions: Mutex<HashMap<SessionId, Arc<InProcessCodeModeSession>>>,
++    sessions: Mutex<HashMap<SessionId, HostSession>>,
+     seen_session_ids: Mutex<SeenSessionIds>,
+     requests: Mutex<RequestRegistry>,
+     request_tasks: TaskTracker,
+@@ -232,6 +316,7 @@ struct HostState {
+     active_cell_permits: Arc<Semaphore>,
+     closing: AtomicBool,
+     peer: Arc<HostPeer>,
++    resource_limits_selected: bool,
+ }
+ 
+ impl HostState {
+@@ -288,20 +373,52 @@ impl HostState {
+             return;
+         }
+         match request {
+-            HostRequest::OpenSession { session_id } => {
++            HostRequest::OpenSession { session_id, limits } => {
+                 let result = self
+-                    .open_session(session_id.clone())
+-                    .map(|()| HostResponse::SessionReady { session_id });
++                    .open_session(session_id.clone(), limits)
++                    .map(|limits| HostResponse::SessionReady { session_id, limits });
+                 self.respond(request_id, result);
+             }
+             HostRequest::Execute {
+                 session_id,
+                 request,
++                limits,
+             } => {
+                 if cancellation.is_cancelled() {
+                     self.respond(request_id, Err("code-mode request cancelled".to_string()));
+                     return;
+                 }
++                if self.resource_limits_selected != limits.is_some() {
++                    self.respond(
++                        request_id,
++                        Err("resource_limits_v1 requires exact cell limits".to_string()),
++                    );
++                    return;
++                }
++                let session = match self.session(&session_id) {
++                    Ok(session) => session,
++                    Err(err) => {
++                        self.respond(request_id, Err(err));
++                        return;
++                    }
++                };
++                if let (Some(limits), Some(session_limits)) = (limits, session.limits)
++                    && !limits.fits_within(session_limits.max_cell_limits)
++                {
++                    self.respond(
++                        request_id,
++                        Err("cell limits exceed session ceilings".to_string()),
++                    );
++                    return;
++                }
++                if let Some(limits) = limits {
++                    let observed =
++                        EncodedFrame::encoded_len(&request.enabled_tools).unwrap_or(usize::MAX);
++                    if observed > limits.tool_definition_bytes.get() as usize {
++                        self.respond(request_id, Err(format!("resource limit exceeded: code=resource_exhausted resource=tool_definition_bytes limit={} observed={observed}", limits.tool_definition_bytes)));
++                        return;
++                    }
++                }
+                 let request = match request.try_into() {
+                     Ok(request) => request,
+                     Err(err) => {
+@@ -312,13 +429,6 @@ impl HostState {
+                         return;
+                     }
+                 };
+-                let session = match self.session(&session_id) {
+-                    Ok(session) => session,
+-                    Err(err) => {
+-                        self.respond(request_id, Err(err));
+-                        return;
+-                    }
+-                };
+                 let Ok(active_cell_permit) =
+                     Arc::clone(&self.active_cell_permits).try_acquire_owned()
+                 else {
+@@ -328,25 +438,94 @@ impl HostState {
+                     );
+                     return;
+                 };
+-                let result = session.execute(request).await;
+-                match result {
+-                    Ok(started) => {
+-                        let cell_id = started.cell_id.clone();
+-                        self.respond(
++                let session_cell_permit = match &session.active_cell_permits {
++                    Some(permits) => match Arc::clone(permits).try_acquire_owned() {
++                        Ok(permit) => Some(permit),
++                        Err(_) => {
++                            self.respond(
++                                request_id,
++                                Err("code-mode session has too many active cells".to_string()),
++                            );
++                            return;
++                        }
++                    },
++                    None => None,
++                };
++                if self.resource_limits_selected {
++                    let start_guard = match session.acquire_start_gate().await {
++                        Ok(start_guard) => start_guard,
++                        Err(err) => {
++                            self.respond(request_id, Err(err));
++                            return;
++                        }
++                    };
++                    let reserved = match session.runtime.reserve_execute(request, limits).await {
++                        Ok(reserved) => reserved,
++                        Err(err) => {
++                            self.respond(request_id, Err(err));
++                            return;
++                        }
++                    };
++                    let cell_id = reserved.cell_id();
++                    if self
++                        .peer
++                        .respond_and_wait(
+                             request_id,
+                             Ok(HostResponse::ExecutionStarted {
+-                                cell_id: cell_id.into(),
++                                cell_id: (&cell_id).into(),
++                                limits,
+                             }),
+-                        );
+-                        let initial_response_sent = self.peer.start_cell(
+-                            session_id,
++                        )
++                        .await
++                        .is_err()
++                    {
++                        session.runtime.release_reserved_execute(reserved).await;
++                        return;
++                    }
++                    if cancellation.is_cancelled() {
++                        session.runtime.release_reserved_execute(reserved).await;
++                        self.peer.initial_error(
+                             request_id,
+-                            started,
+-                            active_cell_permit,
++                            "code-mode request cancelled before cell start".to_string(),
+                         );
+-                        let _ = initial_response_sent.await;
++                        return;
++                    }
++                    match session.runtime.start_reserved_execute(reserved).await {
++                        Ok(started) => {
++                            drop(start_guard);
++                            let initial_response_sent = self.peer.start_cell(
++                                session_id,
++                                request_id,
++                                started,
++                                active_cell_permit,
++                                session_cell_permit,
++                            );
++                            let _ = initial_response_sent.await;
++                        }
++                        Err(err) => self.peer.initial_error(request_id, err),
++                    }
++                } else {
++                    match session.runtime.execute(request).await {
++                        Ok(started) => {
++                            let cell_id = started.cell_id.clone();
++                            self.respond(
++                                request_id,
++                                Ok(HostResponse::ExecutionStarted {
++                                    cell_id: cell_id.into(),
++                                    limits: None,
++                                }),
++                            );
++                            let initial_response_sent = self.peer.start_cell(
++                                session_id,
++                                request_id,
++                                started,
++                                active_cell_permit,
++                                session_cell_permit,
++                            );
++                            let _ = initial_response_sent.await;
++                        }
++                        Err(err) => self.respond(request_id, Err(err)),
+                     }
+-                    Err(err) => self.respond(request_id, Err(err)),
+                 }
+             }
+             HostRequest::Wait {
+@@ -355,12 +534,24 @@ impl HostState {
+             } => {
+                 let result = match self.session(&session_id) {
+                     Ok(session) => {
++                        let pending = if self.resource_limits_selected {
++                            let _start_guard = match session.acquire_start_gate().await {
++                                Ok(start_guard) => start_guard,
++                                Err(err) => {
++                                    self.respond(request_id, Err(err));
++                                    return;
++                                }
++                            };
++                            session.runtime.begin_wait(request.into()).await
++                        } else {
++                            session.runtime.begin_wait(request.into()).await
++                        };
+                         tokio::select! {
+                             biased;
+                             _ = cancellation.cancelled() => {
+                                 Err("code-mode request cancelled".to_string())
+                             }
+-                            result = session.wait(request.into()) => result.map(|outcome| {
++                            result = pending => result.map(|outcome| {
+                                 HostResponse::WaitCompleted {
+                                     outcome: outcome.into(),
+                                 }
+@@ -376,11 +567,24 @@ impl HostState {
+                 cell_id,
+             } => {
+                 let result = match self.session(&session_id) {
+-                    Ok(session) => session.terminate(cell_id.into()).await.map(|outcome| {
+-                        HostResponse::WaitCompleted {
++                    Ok(session) => {
++                        let cell_id = cell_id.into();
++                        let pending = if self.resource_limits_selected {
++                            let _start_guard = match session.acquire_start_gate().await {
++                                Ok(start_guard) => start_guard,
++                                Err(err) => {
++                                    self.respond(request_id, Err(err));
++                                    return;
++                                }
++                            };
++                            session.runtime.begin_terminate(cell_id).await
++                        } else {
++                            session.runtime.begin_terminate(cell_id).await
++                        };
++                        pending.await.map(|outcome| HostResponse::WaitCompleted {
+                             outcome: outcome.into(),
+-                        }
+-                    }),
++                        })
++                    }
+                     Err(err) => Err(err),
+                 };
+                 self.respond(request_id, result);
+@@ -392,7 +596,7 @@ impl HostState {
+                     .unwrap_or_else(PoisonError::into_inner)
+                     .remove(&session_id);
+                 let result = match session {
+-                    Some(session) => match session.shutdown().await {
++                    Some(session) => match session.runtime.shutdown().await {
+                         Ok(()) => {
+                             self.peer.wait_for_session_cells(&session_id).await;
+                             Ok(HostResponse::SessionClosed { session_id })
+@@ -406,13 +610,28 @@ impl HostState {
+         }
+     }
+ 
+-    fn open_session(&self, session_id: SessionId) -> Result<(), String> {
++    fn open_session(
++        &self,
++        session_id: SessionId,
++        limits: Option<SessionLimits>,
++    ) -> Result<Option<SessionLimits>, String> {
++        if self.resource_limits_selected != limits.is_some() {
++            return Err("resource_limits_v1 requires exact session limits".to_string());
++        }
++        if let Some(limits) = limits
++            && !limits.fits_within(process_limits())
++        {
++            return Err("session limits exceed process ceilings".to_string());
++        }
+         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+         if sessions.contains_key(&session_id) {
+             return Err(format!(
+                 "code-mode session ID `{session_id}` is already open"
+             ));
+         }
++        if self.resource_limits_selected && sessions.len() >= MAX_OPEN_SESSIONS {
++            return Err("code-mode host has too many open sessions".to_string());
++        }
+         if self.closing.load(Ordering::Acquire) {
+             return Err("code-mode host is shutting down".to_string());
+         }
+@@ -427,6 +646,7 @@ impl HostState {
+         let delegate = Arc::new(RemoteDelegate::new(
+             session_id.clone(),
+             Arc::clone(&self.peer),
++            limits.map(|limits| limits.max_delegate_calls.get() as usize),
+         ));
+         let peer = Arc::downgrade(&self.peer);
+         let task_failure_handler = Arc::new(move |reason| {
+@@ -434,24 +654,44 @@ impl HostState {
+                 peer.fail(reason);
+             }
+         });
+-        sessions.insert(
+-            session_id,
+-            Arc::new(
+-                InProcessCodeModeSession::with_delegate_and_task_failure_handler(
++        let runtime = match limits {
++            Some(limits) => {
++                InProcessCodeModeSession::with_delegate_task_failure_handler_and_state_limit(
+                     delegate,
+                     task_failure_handler,
+-                ),
++                    limits.max_committed_state_bytes.get() as usize,
++                    limits.max_delegate_calls.get() as usize,
++                )
++            }
++            None => InProcessCodeModeSession::with_delegate_and_task_failure_handler(
++                delegate,
++                task_failure_handler,
+             ),
++        };
++        sessions.insert(
++            session_id,
++            HostSession {
++                runtime: Arc::new(runtime),
++                limits,
++                active_cell_permits: limits
++                    .map(|limits| Arc::new(Semaphore::new(limits.max_active_cells.get() as usize))),
++                start_gate: Arc::new(Semaphore::new(1)),
++            },
+         );
+-        Ok(())
++        Ok(limits)
+     }
+ 
+-    fn session(&self, session_id: &SessionId) -> Result<Arc<InProcessCodeModeSession>, String> {
++    fn session(&self, session_id: &SessionId) -> Result<HostSession, String> {
+         self.sessions
+             .lock()
+             .unwrap_or_else(PoisonError::into_inner)
+             .get(session_id)
+-            .cloned()
++            .map(|session| HostSession {
++                runtime: Arc::clone(&session.runtime),
++                limits: session.limits,
++                active_cell_permits: session.active_cell_permits.clone(),
++                start_gate: Arc::clone(&session.start_gate),
++            })
+             .ok_or_else(|| format!("unknown code-mode session {session_id}"))
+     }
+ 
+@@ -489,7 +729,7 @@ impl HostState {
+             .map(|(_, session)| session)
+             .collect::<Vec<_>>();
+         for session in sessions {
+-            let _ = session.shutdown().await;
++            let _ = session.runtime.shutdown().await;
+         }
+     }
+ }
+diff --git a/codex-rs/code-mode-host/src/main.rs b/codex-rs/code-mode-host/src/main.rs
+index b215869c8a..efcaf58c4f 100644
+--- a/codex-rs/code-mode-host/src/main.rs
++++ b/codex-rs/code-mode-host/src/main.rs
+@@ -1,4 +1,7 @@
+-#[tokio::main(flavor = "current_thread")]
+-async fn main() -> anyhow::Result<()> {
+-    codex_code_mode_host::run_stdio().await
++fn main() -> anyhow::Result<()> {
++    tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .max_blocking_threads(2)
++        .build()?
++        .block_on(codex_code_mode_host::run_stdio())
+ }
+diff --git a/codex-rs/code-mode-host/src/peer.rs b/codex-rs/code-mode-host/src/peer.rs
+index 14ff068e7b..bc658c793e 100644
+--- a/codex-rs/code-mode-host/src/peer.rs
++++ b/codex-rs/code-mode-host/src/peer.rs
+@@ -28,7 +28,7 @@ const CELL_MESSAGE_CAPACITY: usize = 128;
+ const MAX_PENDING_DELEGATE_CALLS: usize = 256;
+ 
+ pub(super) struct HostPeer {
+-    outgoing_tx: mpsc::Sender<EncodedFrame>,
++    outgoing_tx: mpsc::Sender<OutgoingFrame>,
+     pending: Mutex<HashMap<DelegateRequestId, PendingDelegate>>,
+     delegate_permits: Arc<Semaphore>,
+     cell_routes: StdMutex<HashMap<(SessionId, CellId), CellRoute>>,
+@@ -58,8 +58,13 @@ enum CellMessage {
+     Closed,
+ }
+ 
++pub(super) struct OutgoingFrame {
++    pub(super) frame: EncodedFrame,
++    pub(super) written_tx: Option<oneshot::Sender<Result<(), String>>>,
++}
++
+ impl HostPeer {
+-    pub(super) fn new(outgoing_tx: mpsc::Sender<EncodedFrame>) -> Self {
++    pub(super) fn new(outgoing_tx: mpsc::Sender<OutgoingFrame>) -> Self {
+         Self {
+             outgoing_tx,
+             pending: Mutex::new(HashMap::new()),
+@@ -97,6 +102,37 @@ impl HostPeer {
+         }
+     }
+ 
++    pub(super) async fn respond_and_wait(
++        &self,
++        id: RequestId,
++        result: Result<codex_code_mode_protocol::host::HostResponse, String>,
++    ) -> Result<(), String> {
++        let frame = EncodedFrame::encode(&HostToClient::Response {
++            id,
++            result: WireResult::from_result(result),
++        })
++        .map_err(|err| err.to_string())?;
++        let (written_tx, written_rx) = oneshot::channel();
++        self.outgoing_tx
++            .send(OutgoingFrame {
++                frame,
++                written_tx: Some(written_tx),
++            })
++            .await
++            .map_err(|_| "code-mode client connection closed".to_string())?;
++        tokio::select! {
++            result = written_rx => result
++                .map_err(|_| "code-mode writer closed before confirming response".to_string())?,
++            _ = self.disconnected.cancelled() => {
++                Err("code-mode client connection closed".to_string())
++            }
++        }
++    }
++
++    pub(super) fn initial_error(&self, id: RequestId, error: String) {
++        self.initial_response(id, Err(error));
++    }
++
+     fn initial_response(
+         &self,
+         id: RequestId,
+@@ -213,6 +249,7 @@ impl HostPeer {
+         request_id: RequestId,
+         started: StartedCell,
+         active_cell_permit: OwnedSemaphorePermit,
++        session_cell_permit: Option<OwnedSemaphorePermit>,
+     ) -> oneshot::Receiver<()> {
+         let (initial_response_sent_tx, initial_response_sent_rx) = oneshot::channel();
+         let key = (session_id, started.cell_id.clone());
+@@ -246,7 +283,10 @@ impl HostPeer {
+                 started,
+                 messages_rx,
+                 initial_response_sent_tx,
+-                active_cell_permit,
++                CellPermits {
++                    _process: active_cell_permit,
++                    _session: session_cell_permit,
++                },
+             )
+             .await;
+         });
+@@ -390,7 +430,10 @@ impl HostPeer {
+     }
+ 
+     fn send_frame(&self, frame: EncodedFrame) -> Result<(), PeerSendError> {
+-        match self.outgoing_tx.try_send(frame) {
++        match self.outgoing_tx.try_send(OutgoingFrame {
++            frame,
++            written_tx: None,
++        }) {
+             Ok(()) => Ok(()),
+             Err(mpsc::error::TrySendError::Full(_)) => {
+                 self.disconnect();
+@@ -415,7 +458,7 @@ async fn drive_cell(
+     started: StartedCell,
+     mut messages_rx: mpsc::Receiver<CellMessage>,
+     initial_response_sent_tx: oneshot::Sender<()>,
+-    _active_cell_permit: OwnedSemaphorePermit,
++    _permits: CellPermits,
+ ) {
+     let mut initial_response_sent_tx = Some(initial_response_sent_tx);
+     let initial_response = started.initial_response();
+@@ -479,6 +522,11 @@ async fn drive_cell(
+     peer.remove_cell_route(&key);
+ }
+ 
++struct CellPermits {
++    _process: OwnedSemaphorePermit,
++    _session: Option<OwnedSemaphorePermit>,
++}
++
+ impl HostPeer {
+     fn remove_cell_route(&self, key: &(SessionId, CellId)) {
+         let removed = self
+diff --git a/codex-rs/code-mode-host/src/peer_tests.rs b/codex-rs/code-mode-host/src/peer_tests.rs
+index a926027ce9..d32f6993d4 100644
+--- a/codex-rs/code-mode-host/src/peer_tests.rs
++++ b/codex-rs/code-mode-host/src/peer_tests.rs
+@@ -38,6 +38,7 @@ async fn start_cell_reports_when_initial_response_is_enqueued() {
+         RequestId::new(/*value*/ 1),
+         started,
+         active_cell_permit,
++        /*session_cell_permit*/ None,
+     );
+     assert_eq!(initial_response_sent.try_recv(), Err(TryRecvError::Empty));
+ 
+diff --git a/codex-rs/code-mode-protocol/src/host/codec.rs b/codex-rs/code-mode-protocol/src/host/codec.rs
+index ec07b92d41..e53e1e1c1e 100644
+--- a/codex-rs/code-mode-protocol/src/host/codec.rs
++++ b/codex-rs/code-mode-protocol/src/host/codec.rs
+@@ -18,6 +18,20 @@ pub struct EncodedFrame {
+ }
+ 
+ impl EncodedFrame {
++    pub fn encoded_len<T>(message: &T) -> io::Result<usize>
++    where
++        T: Serialize,
++    {
++        let mut writer = CountingWriter(0);
++        serde_json::to_writer(&mut writer, message).map_err(|err| {
++            io::Error::new(
++                io::ErrorKind::InvalidData,
++                format!("failed to measure code-mode IPC frame: {err}"),
++            )
++        })?;
++        Ok(writer.0)
++    }
++
+     pub fn encode<T>(message: &T) -> io::Result<Self>
+     where
+         T: Serialize,
+@@ -41,6 +55,19 @@ impl EncodedFrame {
+     }
+ }
+ 
++struct CountingWriter(usize);
++
++impl io::Write for CountingWriter {
++    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
++        self.0 = self.0.saturating_add(buffer.len());
++        Ok(buffer.len())
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
+ /// Decodes JSON messages prefixed by a four-byte little-endian payload length.
+ pub struct FramedReader<R> {
+     reader: R,
+diff --git a/codex-rs/code-mode-protocol/src/host/host_tests.rs b/codex-rs/code-mode-protocol/src/host/host_tests.rs
+index dde38e87c9..f7eb67efa1 100644
+--- a/codex-rs/code-mode-protocol/src/host/host_tests.rs
++++ b/codex-rs/code-mode-protocol/src/host/host_tests.rs
+@@ -246,6 +246,7 @@ fn client_to_host_v1_variants_are_pinned() {
+             request_id(/*value*/ 1),
+             HostRequest::OpenSession {
+                 session_id: session_id(),
++                limits: None,
+             },
+             json!({ "method": "session/open", "sessionId": "session-1" }),
+         ),
+@@ -254,6 +255,7 @@ fn client_to_host_v1_variants_are_pinned() {
+             HostRequest::Execute {
+                 session_id: session_id(),
+                 request: execute_request,
++                limits: None,
+             },
+             json!({
+                 "method": "session/execute",
+@@ -391,6 +393,7 @@ fn host_to_client_v1_variants_are_pinned() {
+             request_id(/*value*/ 1),
+             HostResponse::SessionReady {
+                 session_id: session_id(),
++                limits: None,
+             },
+             json!({ "type": "session/ready", "sessionId": "session-1" }),
+         ),
+@@ -398,6 +401,7 @@ fn host_to_client_v1_variants_are_pinned() {
+             request_id(/*value*/ 2),
+             HostResponse::ExecutionStarted {
+                 cell_id: cell_id("cell-1"),
++                limits: None,
+             },
+             json!({ "type": "execution/started", "cellId": "cell-1" }),
+         ),
+diff --git a/codex-rs/code-mode-protocol/src/host/message.rs b/codex-rs/code-mode-protocol/src/host/message.rs
+index 0e83c866e4..584c649b69 100644
+--- a/codex-rs/code-mode-protocol/src/host/message.rs
++++ b/codex-rs/code-mode-protocol/src/host/message.rs
+@@ -6,11 +6,14 @@ use serde_json::Value as JsonValue;
+ 
+ use super::Capability;
+ use super::CapabilitySet;
++use super::CellLimits;
+ use super::DelegateRequestId;
+ use super::HandshakeRejectReason;
++use super::ProcessLimits;
+ use super::ProtocolVersion;
+ use super::RequestId;
+ use super::SessionId;
++use super::SessionLimits;
+ use super::SupportedProtocolVersions;
+ use super::WireCellId;
+ use super::WireExecuteRequest;
+@@ -105,6 +108,8 @@ impl std::error::Error for ClientHelloError {}
+ pub struct HostHello {
+     selected_version: ProtocolVersion,
+     capabilities: CapabilitySet,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    process_limits: Option<ProcessLimits>,
+ }
+ 
+ impl HostHello {
+@@ -112,6 +117,19 @@ impl HostHello {
+         Self {
+             selected_version,
+             capabilities,
++            process_limits: None,
++        }
++    }
++
++    pub fn with_process_limits(
++        selected_version: ProtocolVersion,
++        capabilities: CapabilitySet,
++        process_limits: ProcessLimits,
++    ) -> Self {
++        Self {
++            selected_version,
++            capabilities,
++            process_limits: Some(process_limits),
+         }
+     }
+ 
+@@ -122,6 +140,10 @@ impl HostHello {
+     pub fn capabilities(&self) -> &CapabilitySet {
+         &self.capabilities
+     }
++
++    pub fn process_limits(&self) -> Option<ProcessLimits> {
++        self.process_limits
++    }
+ }
+ 
+ /// Messages sent from a client to the code-mode host.
+@@ -178,11 +200,17 @@ pub enum HostToClient {
+ #[serde(deny_unknown_fields, tag = "method", rename_all_fields = "camelCase")]
+ pub enum HostRequest {
+     #[serde(rename = "session/open")]
+-    OpenSession { session_id: SessionId },
++    OpenSession {
++        session_id: SessionId,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        limits: Option<SessionLimits>,
++    },
+     #[serde(rename = "session/execute")]
+     Execute {
+         session_id: SessionId,
+         request: WireExecuteRequest,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        limits: Option<CellLimits>,
+     },
+     #[serde(rename = "session/wait")]
+     Wait {
+@@ -202,9 +230,17 @@ pub enum HostRequest {
+ #[serde(deny_unknown_fields, tag = "type", rename_all_fields = "camelCase")]
+ pub enum HostResponse {
+     #[serde(rename = "session/ready")]
+-    SessionReady { session_id: SessionId },
++    SessionReady {
++        session_id: SessionId,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        limits: Option<SessionLimits>,
++    },
+     #[serde(rename = "execution/started")]
+-    ExecutionStarted { cell_id: WireCellId },
++    ExecutionStarted {
++        cell_id: WireCellId,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        limits: Option<CellLimits>,
++    },
+     #[serde(rename = "wait/completed")]
+     WaitCompleted { outcome: WireWaitOutcome },
+     #[serde(rename = "session/closed")]
+diff --git a/codex-rs/code-mode-protocol/src/host/mod.rs b/codex-rs/code-mode-protocol/src/host/mod.rs
+index 3583ccb3e9..ff1fe490b0 100644
+--- a/codex-rs/code-mode-protocol/src/host/mod.rs
++++ b/codex-rs/code-mode-protocol/src/host/mod.rs
+@@ -1,9 +1,8 @@
+ //! Messages and local IPC framing for the code-mode host boundary.
+ //!
+ //! Protocol version 1 multiplexes session operations and delegate callbacks by
+-//! request ID over one ordered connection. It defines no optional capabilities
+-//! yet; capability names provide an extension point for later versions without
+-//! weakening the v1 decoder.
++//! request ID over one ordered connection. Optional capabilities add fields
++//! without changing the wire shape seen by clients that do not select them.
+ 
+ mod codec;
+ mod error;
+@@ -39,13 +38,17 @@ pub use payload::WireWaitOutcome;
+ pub use payload::WireWaitRequest;
+ pub use types::Capability;
+ pub use types::CapabilitySet;
++pub use types::CellLimits;
+ pub use types::DelegateRequestId;
+ pub use types::DuplicateCapability;
+ pub use types::InvalidIdentifier;
+ pub use types::InvalidSupportedProtocolVersions;
++pub use types::ProcessLimits;
+ pub use types::ProtocolVersion;
++pub use types::RESOURCE_LIMITS_V1;
+ pub use types::RequestId;
+ pub use types::SessionId;
++pub use types::SessionLimits;
+ pub use types::SupportedProtocolVersions;
+ 
+ #[cfg(test)]
+diff --git a/codex-rs/code-mode-protocol/src/host/types.rs b/codex-rs/code-mode-protocol/src/host/types.rs
+index 40c69df90b..18ea9de9c7 100644
+--- a/codex-rs/code-mode-protocol/src/host/types.rs
++++ b/codex-rs/code-mode-protocol/src/host/types.rs
+@@ -8,6 +8,63 @@ use serde::Serialize;
+ use serde::Serializer;
+ use serde::de::Error as _;
+ 
++pub const RESOURCE_LIMITS_V1: &str = "resource_limits_v1";
++
++/// Exact per-cell resource limits negotiated by `resource_limits_v1`.
++#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
++#[serde(deny_unknown_fields, rename_all = "camelCase")]
++pub struct CellLimits {
++    pub heap_bytes: NonZeroU32,
++    pub wall_time_ms: NonZeroU32,
++    pub pending_timers: NonZeroU32,
++    pub output_bytes: NonZeroU32,
++    pub delegate_result_bytes: NonZeroU32,
++    pub tool_definition_bytes: NonZeroU32,
++}
++
++impl CellLimits {
++    pub fn fits_within(self, maximum: Self) -> bool {
++        self.heap_bytes <= maximum.heap_bytes
++            && self.wall_time_ms <= maximum.wall_time_ms
++            && self.pending_timers <= maximum.pending_timers
++            && self.output_bytes <= maximum.output_bytes
++            && self.delegate_result_bytes <= maximum.delegate_result_bytes
++            && self.tool_definition_bytes <= maximum.tool_definition_bytes
++    }
++}
++
++/// Immutable ceilings advertised by a host process.
++#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
++#[serde(deny_unknown_fields, rename_all = "camelCase")]
++pub struct ProcessLimits {
++    pub max_frame_bytes: NonZeroU32,
++    pub max_open_sessions: NonZeroU32,
++    pub max_committed_state_bytes_per_session: NonZeroU32,
++    pub max_active_cells: NonZeroU32,
++    pub max_in_flight_operations: NonZeroU32,
++    pub max_delegate_calls: NonZeroU32,
++    pub max_cell_limits: CellLimits,
++}
++
++/// Fixed limits owned by one open session.
++#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
++#[serde(deny_unknown_fields, rename_all = "camelCase")]
++pub struct SessionLimits {
++    pub max_active_cells: NonZeroU32,
++    pub max_delegate_calls: NonZeroU32,
++    pub max_committed_state_bytes: NonZeroU32,
++    pub max_cell_limits: CellLimits,
++}
++
++impl SessionLimits {
++    pub fn fits_within(self, process: ProcessLimits) -> bool {
++        self.max_active_cells <= process.max_active_cells
++            && self.max_delegate_calls <= process.max_delegate_calls
++            && self.max_committed_state_bytes <= process.max_committed_state_bytes_per_session
++            && self.max_cell_limits.fits_within(process.max_cell_limits)
++    }
++}
++
+ /// Correlates one client operation request with the host's response.
+ #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+ #[serde(transparent)]
+diff --git a/codex-rs/code-mode/src/cell_actor/callbacks.rs b/codex-rs/code-mode/src/cell_actor/callbacks.rs
+index 08f7cbac99..75fc9dd61d 100644
+--- a/codex-rs/code-mode/src/cell_actor/callbacks.rs
++++ b/codex-rs/code-mode/src/cell_actor/callbacks.rs
+@@ -10,6 +10,7 @@ use super::CellHost;
+ use super::CellToolCall;
+ use crate::TaskFailureHandler;
+ use crate::runtime::RuntimeCommand;
++use crate::runtime::json_size;
+ 
+ #[derive(Clone, Copy)]
+ pub(super) enum CallbackCompletion {
+@@ -22,6 +23,7 @@ pub(super) fn spawn_notification<H: CellHost>(
+     host: Arc<H>,
+     call_id: String,
+     text: String,
++    runtime_tx: std::sync::mpsc::Sender<RuntimeCommand>,
+     cancellation_token: CancellationToken,
+     task_failure_handler: Option<TaskFailureHandler>,
+ ) {
+@@ -38,6 +40,7 @@ pub(super) fn spawn_notification<H: CellHost>(
+                 "code mode notification task panicked".to_string(),
+             ),
+         }
++        let _ = runtime_tx.send(RuntimeCommand::DelegateCompleted);
+     });
+ }
+ 
+@@ -46,6 +49,7 @@ pub(super) fn spawn_tool<H: CellHost>(
+     host: Arc<H>,
+     invocation: CellToolCall,
+     runtime_tx: std::sync::mpsc::Sender<RuntimeCommand>,
++    delegate_result_bytes: Option<usize>,
+     cancellation_token: CancellationToken,
+     task_failure_handler: Option<TaskFailureHandler>,
+ ) {
+@@ -56,7 +60,20 @@ pub(super) fn spawn_tool<H: CellHost>(
+                 .catch_unwind()
+                 .await;
+         let (command, failure_reason) = match callback {
+-            Ok(Ok(result)) => (RuntimeCommand::ToolResponse { id, result }, None),
++            Ok(Ok(result)) => {
++                let observed = json_size(&result);
++                if delegate_result_bytes.is_some_and(|limit| observed > limit) {
++                    (RuntimeCommand::ToolError {
++                        id,
++                        error_text: format!(
++                            "resource limit exceeded: code=resource_exhausted resource=delegate_result_bytes limit={} observed={observed}",
++                            delegate_result_bytes.unwrap_or_default()
++                        ),
++                    }, None)
++                } else {
++                    (RuntimeCommand::ToolResponse { id, result }, None)
++                }
++            }
+             Ok(Err(error_text)) => (RuntimeCommand::ToolError { id, error_text }, None),
+             Err(_) => {
+                 let failure_reason = "code mode tool task panicked".to_string();
+diff --git a/codex-rs/code-mode/src/cell_actor/callbacks_tests.rs b/codex-rs/code-mode/src/cell_actor/callbacks_tests.rs
+index 585f7808a8..bfcc14fa65 100644
+--- a/codex-rs/code-mode/src/cell_actor/callbacks_tests.rs
++++ b/codex-rs/code-mode/src/cell_actor/callbacks_tests.rs
+@@ -68,6 +68,7 @@ async fn tool_callback_panic_rejects_the_js_promise_and_reports_failure() {
+             input: None,
+         },
+         runtime_tx,
++        /*delegate_result_bytes*/ None,
+         CancellationToken::new(),
+         Some(Arc::new(move |reason| {
+             let _ = failure_tx.send(reason);
+@@ -94,11 +95,13 @@ async fn tool_callback_panic_rejects_the_js_promise_and_reports_failure() {
+ async fn notification_callback_panic_reports_failure() {
+     let mut tasks = JoinSet::new();
+     let (failure_tx, mut failure_rx) = mpsc::unbounded_channel();
++    let (runtime_tx, _runtime_rx) = std_mpsc::channel();
+     spawn_notification(
+         &mut tasks,
+         Arc::new(PanickingCallbackHost),
+         "notify-1".to_string(),
+         "hello".to_string(),
++        runtime_tx,
+         CancellationToken::new(),
+         Some(Arc::new(move |reason| {
+             let _ = failure_tx.send(reason);
+diff --git a/codex-rs/code-mode/src/cell_actor/mod.rs b/codex-rs/code-mode/src/cell_actor/mod.rs
+index 7533f4b0cc..869931d191 100644
+--- a/codex-rs/code-mode/src/cell_actor/mod.rs
++++ b/codex-rs/code-mode/src/cell_actor/mod.rs
+@@ -35,6 +35,7 @@ use crate::runtime::PendingRuntimeMode;
+ use crate::runtime::RuntimeCommand;
+ use crate::runtime::RuntimeControlCommand;
+ use crate::runtime::RuntimeEvent;
++use crate::runtime::RuntimeLimits;
+ use crate::runtime::spawn_runtime;
+ use crate::session_runtime::CellEvent;
+ use crate::session_runtime::CreateCellRequest as CellRequest;
+@@ -52,6 +53,7 @@ impl CellActor {
+         initial_observe_mode: ObserveMode,
+         cell_state: Arc<CellState>,
+         task_failure_handler: Option<TaskFailureHandler>,
++        limits: RuntimeLimits,
+     ) -> Result<
+         (
+             CellHandle,
+@@ -60,6 +62,10 @@ impl CellActor {
+         ),
+         String,
+     > {
++        let deadline = limits.cell.map(|limits| {
++            tokio::time::Instant::now()
++                + std::time::Duration::from_millis(limits.wall_time_ms.get() as u64)
++        });
+         let (event_tx, event_rx) = mpsc::unbounded_channel();
+         let (command_tx, command_rx) = mpsc::unbounded_channel();
+         let (initial_response_tx, initial_response_rx) = oneshot::channel();
+@@ -69,6 +75,7 @@ impl CellActor {
+             event_tx,
+             PendingRuntimeMode::PauseUntilResumed,
+             task_failure_handler.clone(),
++            limits,
+         )?;
+         let handle = CellHandle::new(command_tx, Arc::clone(&cell_state));
+         let task = run_cell(
+@@ -78,6 +85,11 @@ impl CellActor {
+                 runtime_control_tx,
+                 runtime_terminate_handle,
+                 cell_state,
++                deadline,
++                wall_time_limit_ms: limits.cell.map(|limits| limits.wall_time_ms.get()),
++                delegate_result_bytes: limits
++                    .cell
++                    .map(|limits| limits.delegate_result_bytes.get() as usize),
+             },
+             event_rx,
+             command_rx,
+@@ -98,6 +110,9 @@ struct CellContext {
+     runtime_control_tx: std::sync::mpsc::Sender<RuntimeControlCommand>,
+     runtime_terminate_handle: v8::IsolateHandle,
+     cell_state: Arc<CellState>,
++    deadline: Option<tokio::time::Instant>,
++    wall_time_limit_ms: Option<u32>,
++    delegate_result_bytes: Option<usize>,
+ }
+ 
+ struct Observer {
+@@ -118,6 +133,9 @@ async fn run_cell<H: CellHost>(
+         runtime_control_tx,
+         runtime_terminate_handle,
+         cell_state,
++        deadline,
++        wall_time_limit_ms,
++        delegate_result_bytes,
+     } = context;
+     let cancellation_token = cell_state.cancellation_token();
+     let callback_cancellation_token = cancellation_token.child_token();
+@@ -126,6 +144,7 @@ async fn run_cell<H: CellHost>(
+     let mut pending_frontier_ready = false;
+     let mut observer = Some(initial_observer);
+     let mut termination = false;
++    let mut deadline_exceeded = false;
+     let mut runtime_closed = false;
+     let mut runtime_paused = false;
+     let mut runtime_failure_reported = false;
+@@ -139,6 +158,23 @@ async fn run_cell<H: CellHost>(
+             .is_some_and(|yield_timer| yield_timer.deadline() <= tokio::time::Instant::now());
+         tokio::select! {
+             biased;
++            _ = async {
++                match deadline {
++                    Some(deadline) => tokio::time::sleep_until(deadline).await,
++                    None => std::future::pending().await,
++                }
++            }, if !termination => {
++                termination = true;
++                deadline_exceeded = true;
++                yield_timer = None;
++                drop(command_rx.take());
++                begin_termination(
++                    &runtime_tx,
++                    &runtime_control_tx,
++                    &runtime_terminate_handle,
++                    &cancellation_token,
++                );
++            }
+             _ = cancellation_token.cancelled(), if !termination => {
+                 termination = true;
+                 yield_timer = None;
+@@ -160,9 +196,7 @@ async fn run_cell<H: CellHost>(
+                     finish_termination(
+                         &cell_state,
+                         observer.take().map(|observer| observer.response_tx),
+-                        CellEvent::Terminated {
+-                            content_items: std::mem::take(&mut content_items),
+-                        },
++                        terminal_event(&mut content_items, deadline_exceeded, wall_time_limit_ms),
+                     );
+                     break;
+                 }
+@@ -271,9 +305,7 @@ async fn run_cell<H: CellHost>(
+                         finish_termination(
+                             &cell_state,
+                             observer.take().map(|observer| observer.response_tx),
+-                            CellEvent::Terminated {
+-                                content_items: std::mem::take(&mut content_items),
+-                            },
++                            terminal_event(&mut content_items, deadline_exceeded, wall_time_limit_ms),
+                         );
+                         break;
+                     }
+@@ -392,6 +424,7 @@ async fn run_cell<H: CellHost>(
+                             Arc::clone(&host),
+                             call_id,
+                             text,
++                            runtime_tx.clone(),
+                             callback_cancellation_token.child_token(),
+                             task_failure_handler.clone(),
+                         );
+@@ -411,6 +444,7 @@ async fn run_cell<H: CellHost>(
+                                 input,
+                             },
+                             runtime_tx.clone(),
++                            delegate_result_bytes,
+                             callback_cancellation_token.child_token(),
+                             task_failure_handler.clone(),
+                         );
+@@ -429,9 +463,7 @@ async fn run_cell<H: CellHost>(
+                             finish_termination(
+                                 &cell_state,
+                                 observer.take().map(|observer| observer.response_tx),
+-                                CellEvent::Terminated {
+-                                    content_items: std::mem::take(&mut content_items),
+-                                },
++                                terminal_event(&mut content_items, deadline_exceeded, wall_time_limit_ms),
+                             );
+                             break;
+                         }
+@@ -564,6 +596,27 @@ fn finish_termination(
+     }
+ }
+ 
++fn terminal_event(
++    content_items: &mut Vec<OutputItem>,
++    deadline_exceeded: bool,
++    wall_time_limit_ms: Option<u32>,
++) -> CellEvent {
++    if deadline_exceeded {
++        CellEvent::Completed {
++            content_items: std::mem::take(content_items),
++            error_text: Some(format!(
++                "resource limit exceeded: code=resource_exhausted resource=wall_time_ms limit={} observed={}",
++                wall_time_limit_ms.unwrap_or_default(),
++                wall_time_limit_ms.unwrap_or_default().saturating_add(1)
++            )),
++        }
++    } else {
++        CellEvent::Terminated {
++            content_items: std::mem::take(content_items),
++        }
++    }
++}
++
+ fn observer_timer(observer: &Observer) -> Option<std::pin::Pin<Box<tokio::time::Sleep>>> {
+     match observer.mode {
+         ObserveMode::YieldAfter(duration) => Some(Box::pin(tokio::time::sleep(duration))),
+diff --git a/codex-rs/code-mode/src/cell_actor/tests.rs b/codex-rs/code-mode/src/cell_actor/tests.rs
+index 3612daff91..02ae60c2f3 100644
+--- a/codex-rs/code-mode/src/cell_actor/tests.rs
++++ b/codex-rs/code-mode/src/cell_actor/tests.rs
+@@ -131,6 +131,11 @@ fn spawn_cell_actor_harness_with_host_and_failure_handler<H: CellHost>(
+         runtime_event_tx,
+         PendingRuntimeMode::PauseUntilResumed,
+         /*task_failure_handler*/ None,
++        RuntimeLimits {
++            cell: None,
++            committed_state_bytes: None,
++            pending_delegate_calls: None,
++        },
+     )
+     .unwrap();
+     let (runtime_control_tx, runtime_control_rx) = std_mpsc::channel();
+@@ -143,6 +148,9 @@ fn spawn_cell_actor_harness_with_host_and_failure_handler<H: CellHost>(
+             runtime_control_tx,
+             runtime_terminate_handle,
+             cell_state,
++            deadline: None,
++            wall_time_limit_ms: None,
++            delegate_result_bytes: None,
+         },
+         event_rx,
+         command_rx,
+diff --git a/codex-rs/code-mode/src/lib.rs b/codex-rs/code-mode/src/lib.rs
+index 6d332bf0c4..526b3f6ec0 100644
+--- a/codex-rs/code-mode/src/lib.rs
++++ b/codex-rs/code-mode/src/lib.rs
+@@ -13,5 +13,6 @@ pub use remote_session::ProcessOwnedCodeModeSessionProvider;
+ pub use service::InProcessCodeModeSession;
+ pub use service::InProcessCodeModeSessionProvider;
+ pub use service::NoopCodeModeSessionDelegate;
++pub use service::ReservedExecution;
+ pub use v8_init::V8JitMode;
+ pub use v8_init::initialize_v8;
+diff --git a/codex-rs/code-mode/src/remote_session/connection/driver/commands.rs b/codex-rs/code-mode/src/remote_session/connection/driver/commands.rs
+index c9cba9c32d..dac30a6f95 100644
+--- a/codex-rs/code-mode/src/remote_session/connection/driver/commands.rs
++++ b/codex-rs/code-mode/src/remote_session/connection/driver/commands.rs
+@@ -82,6 +82,7 @@ impl ConnectionDriver {
+             id: request_id,
+             request: HostRequest::OpenSession {
+                 session_id: session.id.clone(),
++                limits: None,
+             },
+         };
+         let frame = match EncodedFrame::encode(&message) {
+@@ -140,6 +141,7 @@ impl ConnectionDriver {
+             request: HostRequest::Execute {
+                 session_id: session.id.clone(),
+                 request,
++                limits: None,
+             },
+         };
+         let frame = match EncodedFrame::encode(&message) {
+diff --git a/codex-rs/code-mode/src/remote_session/connection/driver/responses.rs b/codex-rs/code-mode/src/remote_session/connection/driver/responses.rs
+index 19c78ec000..4f9c28ada5 100644
+--- a/codex-rs/code-mode/src/remote_session/connection/driver/responses.rs
++++ b/codex-rs/code-mode/src/remote_session/connection/driver/responses.rs
+@@ -96,7 +96,10 @@ impl ConnectionDriver {
+                 cancellation,
+                 response_tx,
+             } => match result {
+-                Ok(HostResponse::SessionReady { session_id }) if session_id == session.id => {
++                Ok(HostResponse::SessionReady {
++                    session_id,
++                    limits: None,
++                }) if session_id == session.id => {
+                     let abandoned = cancellation.is_cancelled() || response_tx.is_closed();
+                     self.sessions
+                         .insert_ready(session.clone(), delegate, cleanup);
+@@ -122,7 +125,10 @@ impl ConnectionDriver {
+                 initial_response_rx,
+                 cancellation,
+             } => match result {
+-                Ok(HostResponse::ExecutionStarted { cell_id }) => {
++                Ok(HostResponse::ExecutionStarted {
++                    cell_id,
++                    limits: None,
++                }) => {
+                     // The host owns a checked, never-reused ID sequence. Retain only live
+                     // IDs so client memory scales with concurrency, not session lifetime.
+                     let remote_cell_id = cell_id.clone();
+diff --git a/codex-rs/code-mode/src/remote_session/connection/driver_tests.rs b/codex-rs/code-mode/src/remote_session/connection/driver_tests.rs
+index 97ed9b553e..756877734d 100644
+--- a/codex-rs/code-mode/src/remote_session/connection/driver_tests.rs
++++ b/codex-rs/code-mode/src/remote_session/connection/driver_tests.rs
+@@ -99,6 +99,7 @@ impl DriverHarness {
+                 result: WireResult::Ok {
+                     value: HostResponse::SessionReady {
+                         session_id: session.id,
++                        limits: None,
+                     },
+                 },
+             }))
+@@ -140,6 +141,7 @@ impl DriverHarness {
+                 result: WireResult::Ok {
+                     value: HostResponse::ExecutionStarted {
+                         cell_id: CellId::new(cell_id.to_string()).into(),
++                        limits: None,
+                     },
+                 },
+             }))
+@@ -353,6 +355,7 @@ async fn dropped_open_waiter_shuts_down_committed_session() {
+             result: WireResult::Ok {
+                 value: HostResponse::SessionReady {
+                     session_id: session.id.clone(),
++                    limits: None,
+                 },
+             },
+         }))
+@@ -1092,6 +1095,7 @@ async fn abandoned_execute_is_tracked_and_terminated_after_admission() {
+             result: WireResult::Ok {
+                 value: HostResponse::ExecutionStarted {
+                     cell_id: CellId::new("1".to_string()).into(),
++                    limits: None,
+                 },
+             },
+         }))
+@@ -1185,6 +1189,7 @@ async fn delivered_but_unclaimed_execute_is_terminated_when_the_caller_is_cancel
+             result: WireResult::Ok {
+                 value: HostResponse::ExecutionStarted {
+                     cell_id: CellId::new("1".to_string()).into(),
++                    limits: None,
+                 },
+             },
+         }))
+@@ -1339,6 +1344,7 @@ async fn connection_failure_closes_every_live_cell_once() {
+             result: WireResult::Ok {
+                 value: HostResponse::ExecutionStarted {
+                     cell_id: CellId::new("1".to_string()).into(),
++                    limits: None,
+                 },
+             },
+         }))
+diff --git a/codex-rs/code-mode/src/runtime/callbacks.rs b/codex-rs/code-mode/src/runtime/callbacks.rs
+index fcd61fd63c..c99020b73a 100644
+--- a/codex-rs/code-mode/src/runtime/callbacks.rs
++++ b/codex-rs/code-mode/src/runtime/callbacks.rs
+@@ -3,6 +3,7 @@ use codex_code_mode_protocol::FunctionCallOutputContentItem;
+ use super::EXIT_SENTINEL;
+ use super::RuntimeEvent;
+ use super::RuntimeState;
++use super::json_size;
+ use super::timers;
+ use super::value::json_to_v8;
+ use super::value::normalize_output_audio;
+@@ -11,6 +12,59 @@ use super::value::serialize_output_text;
+ use super::value::throw_type_error;
+ use super::value::v8_value_to_json;
+ 
++fn emit_output(
++    scope: &mut v8::PinScope<'_, '_>,
++    item: FunctionCallOutputContentItem,
++) -> Result<(), String> {
++    emit_outputs(scope, vec![item])
++}
++
++fn emit_outputs(
++    scope: &mut v8::PinScope<'_, '_>,
++    items: Vec<FunctionCallOutputContentItem>,
++) -> Result<(), String> {
++    let bytes = items
++        .iter()
++        .map(output_item_bytes)
++        .fold(0, usize::saturating_add);
++    let state = scope
++        .get_slot_mut::<RuntimeState>()
++        .ok_or_else(|| "runtime state unavailable".to_string())?;
++    let observed = state.output_bytes.saturating_add(bytes);
++    if let Some(limits) = state.limits
++        && observed > limits.output_bytes.get() as usize
++    {
++        return Err(format!(
++            "resource limit exceeded: code=resource_exhausted resource=output_bytes limit={} observed={observed}",
++            limits.output_bytes
++        ));
++    }
++    state.output_bytes = observed;
++    for item in items {
++        state
++            .event_tx
++            .send(RuntimeEvent::ContentItem(item))
++            .map_err(|_| "runtime output channel closed".to_string())?;
++    }
++    Ok(())
++}
++
++fn output_item_bytes(item: &FunctionCallOutputContentItem) -> usize {
++    match item {
++        FunctionCallOutputContentItem::InputText { text } => text.len(),
++        FunctionCallOutputContentItem::InputImage { image_url, detail } => {
++            image_url.len()
++                + detail.map_or(0, |detail| match detail {
++                    crate::ImageDetail::Auto => 4,
++                    crate::ImageDetail::Low => 3,
++                    crate::ImageDetail::High => 4,
++                    crate::ImageDetail::Original => 8,
++                })
++        }
++        FunctionCallOutputContentItem::InputAudio { audio_url } => audio_url.len(),
++    }
++}
++
+ pub(super) fn tool_callback(
+     scope: &mut v8::PinScope<'_, '_>,
+     args: v8::FunctionCallbackArguments,
+@@ -36,6 +90,11 @@ pub(super) fn tool_callback(
+         }
+     };
+ 
++    if let Err(error_text) = admit_delegate(scope) {
++        throw_type_error(scope, &error_text);
++        return;
++    }
++
+     let Some(resolver) = v8::PromiseResolver::new(scope) else {
+         throw_type_error(scope, "failed to create tool promise");
+         return;
+@@ -89,10 +148,9 @@ pub(super) fn text_callback(
+             return;
+         }
+     };
+-    if let Some(state) = scope.get_slot::<RuntimeState>() {
+-        let _ = state.event_tx.send(RuntimeEvent::ContentItem(
+-            FunctionCallOutputContentItem::InputText { text },
+-        ));
++    if let Err(error_text) = emit_output(scope, FunctionCallOutputContentItem::InputText { text }) {
++        throw_type_error(scope, &error_text);
++        return;
+     }
+     retval.set(v8::undefined(scope).into());
+ }
+@@ -111,8 +169,9 @@ pub(super) fn audio_callback(
+         Ok(audio_item) => audio_item,
+         Err(()) => return,
+     };
+-    if let Some(state) = scope.get_slot::<RuntimeState>() {
+-        let _ = state.event_tx.send(RuntimeEvent::ContentItem(audio_item));
++    if let Err(error_text) = emit_output(scope, audio_item) {
++        throw_type_error(scope, &error_text);
++        return;
+     }
+     retval.set(v8::undefined(scope).into());
+ }
+@@ -144,8 +203,9 @@ pub(super) fn image_callback(
+         Ok(image_item) => image_item,
+         Err(()) => return,
+     };
+-    if let Some(state) = scope.get_slot::<RuntimeState>() {
+-        let _ = state.event_tx.send(RuntimeEvent::ContentItem(image_item));
++    if let Err(error_text) = emit_output(scope, image_item) {
++        throw_type_error(scope, &error_text);
++        return;
+     }
+     retval.set(v8::undefined(scope).into());
+ }
+@@ -171,13 +231,13 @@ pub(super) fn generated_image_callback(
+         Ok(image_item) => image_item,
+         Err(()) => return,
+     };
+-    if let Some(state) = scope.get_slot::<RuntimeState>() {
+-        let _ = state.event_tx.send(RuntimeEvent::ContentItem(image_item));
+-        if let Some(text) = output_hint {
+-            let _ = state.event_tx.send(RuntimeEvent::ContentItem(
+-                FunctionCallOutputContentItem::InputText { text },
+-            ));
+-        }
++    let mut items = vec![image_item];
++    if let Some(text) = output_hint {
++        items.push(FunctionCallOutputContentItem::InputText { text });
++    }
++    if let Err(error_text) = emit_outputs(scope, items) {
++        throw_type_error(scope, &error_text);
++        return;
+     }
+     retval.set(v8::undefined(scope).into());
+ }
+@@ -230,6 +290,25 @@ pub(super) fn store_callback(
+         }
+     };
+     if let Some(state) = scope.get_slot_mut::<RuntimeState>() {
++        let new_size = key.len().saturating_add(json_size(&serialized));
++        let old_size = state.stored_value_sizes.get(&key).copied().unwrap_or(0);
++        let observed = state
++            .stored_values_bytes
++            .saturating_sub(old_size)
++            .saturating_add(new_size);
++        if let Some(limit) = state.max_committed_state_bytes
++            && observed > limit
++        {
++            throw_type_error(
++                scope,
++                &format!(
++                    "resource limit exceeded: code=resource_exhausted resource=committed_state_bytes limit={limit} observed={observed}"
++                ),
++            );
++            return;
++        }
++        state.stored_values_bytes = observed;
++        state.stored_value_sizes.insert(key.clone(), new_size);
+         state.stored_values.insert(key.clone(), serialized.clone());
+         state.stored_value_writes.insert(key, serialized);
+     }
+@@ -283,6 +362,10 @@ pub(super) fn notify_callback(
+         throw_type_error(scope, "notify expects non-empty text");
+         return;
+     }
++    if let Err(error_text) = admit_delegate(scope) {
++        throw_type_error(scope, &error_text);
++        return;
++    }
+     if let Some(state) = scope.get_slot::<RuntimeState>() {
+         let _ = state.event_tx.send(RuntimeEvent::Notify {
+             call_id: state.tool_call_id.clone(),
+@@ -292,6 +375,22 @@ pub(super) fn notify_callback(
+     retval.set(v8::undefined(scope).into());
+ }
+ 
++fn admit_delegate(scope: &mut v8::PinScope<'_, '_>) -> Result<(), String> {
++    let state = scope
++        .get_slot_mut::<RuntimeState>()
++        .ok_or_else(|| "runtime state unavailable".to_string())?;
++    let observed = state.pending_delegate_calls.saturating_add(1);
++    if let Some(limit) = state.max_pending_delegate_calls
++        && observed > limit
++    {
++        return Err(format!(
++            "resource limit exceeded: code=resource_exhausted resource=delegate_calls limit={limit} observed={observed}"
++        ));
++    }
++    state.pending_delegate_calls = observed;
++    Ok(())
++}
++
+ pub(super) fn set_timeout_callback(
+     scope: &mut v8::PinScope<'_, '_>,
+     args: v8::FunctionCallbackArguments,
+diff --git a/codex-rs/code-mode/src/runtime/mod.rs b/codex-rs/code-mode/src/runtime/mod.rs
+index 0d32858724..7bc9f733e1 100644
+--- a/codex-rs/code-mode/src/runtime/mod.rs
++++ b/codex-rs/code-mode/src/runtime/mod.rs
+@@ -7,6 +7,8 @@ mod value;
+ use std::collections::HashMap;
+ use std::panic::AssertUnwindSafe;
+ use std::panic::catch_unwind;
++use std::sync::Arc;
++use std::sync::atomic::AtomicUsize;
+ use std::sync::mpsc as std_mpsc;
+ use std::thread;
+ 
+@@ -15,6 +17,7 @@ use codex_code_mode_protocol::EnabledToolMetadata;
+ use codex_code_mode_protocol::ExecuteRequest;
+ use codex_code_mode_protocol::FunctionCallOutputContentItem;
+ use codex_code_mode_protocol::enabled_tool_metadata;
++use codex_code_mode_protocol::host::CellLimits;
+ use codex_protocol::ToolName;
+ use serde_json::Value as JsonValue;
+ use tokio::sync::mpsc;
+@@ -29,6 +32,7 @@ pub(crate) enum RuntimeCommand {
+     ToolResponse { id: String, result: JsonValue },
+     ToolError { id: String, error_text: String },
+     TimeoutFired { id: u64 },
++    DelegateCompleted,
+     ObservePendingFrontier,
+     Terminate,
+ }
+@@ -70,12 +74,20 @@ pub(crate) enum RuntimeEvent {
+     ThreadPanicked,
+ }
+ 
++#[derive(Clone, Copy)]
++pub(crate) struct RuntimeLimits {
++    pub(crate) cell: Option<CellLimits>,
++    pub(crate) committed_state_bytes: Option<usize>,
++    pub(crate) pending_delegate_calls: Option<usize>,
++}
++
+ pub(crate) fn spawn_runtime(
+     stored_values: HashMap<String, JsonValue>,
+     request: ExecuteRequest,
+     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+     pending_mode: PendingRuntimeMode,
+     task_failure_handler: Option<TaskFailureHandler>,
++    limits: RuntimeLimits,
+ ) -> Result<
+     (
+         std_mpsc::Sender<RuntimeCommand>,
+@@ -100,6 +112,9 @@ pub(crate) fn spawn_runtime(
+         enabled_tools,
+         source: request.source,
+         stored_values,
++        limits: limits.cell,
++        max_committed_state_bytes: limits.committed_state_bytes,
++        max_pending_delegate_calls: limits.pending_delegate_calls,
+     };
+ 
+     spawn_supervised_runtime_thread(event_tx.clone(), task_failure_handler, move || {
+@@ -141,6 +156,9 @@ struct RuntimeConfig {
+     enabled_tools: Vec<EnabledToolMetadata>,
+     source: String,
+     stored_values: HashMap<String, JsonValue>,
++    limits: Option<CellLimits>,
++    max_committed_state_bytes: Option<usize>,
++    max_pending_delegate_calls: Option<usize>,
+ }
+ 
+ pub(super) struct RuntimeState {
+@@ -148,6 +166,8 @@ pub(super) struct RuntimeState {
+     pending_tool_calls: HashMap<String, v8::Global<v8::PromiseResolver>>,
+     pending_timeouts: HashMap<u64, timers::ScheduledTimeout>,
+     stored_values: HashMap<String, JsonValue>,
++    stored_value_sizes: HashMap<String, usize>,
++    stored_values_bytes: usize,
+     stored_value_writes: HashMap<String, JsonValue>,
+     enabled_tools: Vec<EnabledToolMetadata>,
+     next_tool_call_id: u64,
+@@ -155,6 +175,12 @@ pub(super) struct RuntimeState {
+     tool_call_id: String,
+     runtime_command_tx: std_mpsc::Sender<RuntimeCommand>,
+     exit_requested: bool,
++    limits: Option<CellLimits>,
++    output_bytes: usize,
++    max_committed_state_bytes: Option<usize>,
++    max_pending_delegate_calls: Option<usize>,
++    pending_delegate_calls: usize,
++    live_timer_workers: Arc<AtomicUsize>,
+ }
+ 
+ pub(super) enum CompletionState {
+@@ -174,7 +200,14 @@ fn run_runtime(
+     isolate_handle_tx: std_mpsc::SyncSender<v8::IsolateHandle>,
+     runtime_command_tx: std_mpsc::Sender<RuntimeCommand>,
+ ) {
+-    let isolate = &mut v8::Isolate::new(v8::CreateParams::default());
++    let create_params = match config.limits {
++        Some(limits) => v8::CreateParams::default().heap_limits(
++            limits.heap_bytes.get() as usize,
++            limits.heap_bytes.get() as usize,
++        ),
++        None => v8::CreateParams::default(),
++    };
++    let isolate = &mut v8::Isolate::new(create_params);
+     let isolate_handle = isolate.thread_safe_handle();
+     if isolate_handle_tx.send(isolate_handle).is_err() {
+         return;
+@@ -185,11 +218,22 @@ fn run_runtime(
+     let context = v8::Context::new(scope, Default::default());
+     let scope = &mut v8::ContextScope::new(scope, context);
+ 
++    let stored_value_sizes = config
++        .stored_values
++        .iter()
++        .map(|(key, value)| (key.clone(), key.len().saturating_add(json_size(value))))
++        .collect::<HashMap<_, _>>();
++    let stored_values_bytes = stored_value_sizes
++        .values()
++        .copied()
++        .fold(0, usize::saturating_add);
+     scope.set_slot(RuntimeState {
+         event_tx: event_tx.clone(),
+         pending_tool_calls: HashMap::new(),
+         pending_timeouts: HashMap::new(),
+         stored_values: config.stored_values,
++        stored_value_sizes,
++        stored_values_bytes,
+         stored_value_writes: HashMap::new(),
+         enabled_tools: config.enabled_tools,
+         next_tool_call_id: 1,
+@@ -197,6 +241,12 @@ fn run_runtime(
+         tool_call_id: config.tool_call_id,
+         runtime_command_tx,
+         exit_requested: false,
++        limits: config.limits,
++        output_bytes: 0,
++        max_committed_state_bytes: config.max_committed_state_bytes,
++        max_pending_delegate_calls: config.max_pending_delegate_calls,
++        pending_delegate_calls: 0,
++        live_timer_workers: Arc::new(AtomicUsize::new(0)),
+     });
+ 
+     if let Err(error_text) = globals::install_globals(scope) {
+@@ -232,6 +282,7 @@ fn run_runtime(
+         match command {
+             RuntimeCommand::Terminate => break,
+             RuntimeCommand::ToolResponse { id, result } => {
++                complete_delegate(scope);
+                 if let Err(error_text) =
+                     module_loader::resolve_tool_response(scope, &id, Ok(result))
+                 {
+@@ -240,6 +291,7 @@ fn run_runtime(
+                 }
+             }
+             RuntimeCommand::ToolError { id, error_text } => {
++                complete_delegate(scope);
+                 if let Err(runtime_error) =
+                     module_loader::resolve_tool_response(scope, &id, Err(error_text))
+                 {
+@@ -253,6 +305,9 @@ fn run_runtime(
+                     return;
+                 }
+             }
++            RuntimeCommand::DelegateCompleted => {
++                complete_delegate(scope);
++            }
+             RuntimeCommand::ObservePendingFrontier => {}
+         }
+ 
+@@ -277,6 +332,30 @@ fn run_runtime(
+     }
+ }
+ 
++fn complete_delegate(scope: &mut v8::PinScope<'_, '_>) {
++    if let Some(state) = scope.get_slot_mut::<RuntimeState>() {
++        state.pending_delegate_calls = state.pending_delegate_calls.saturating_sub(1);
++    }
++}
++
++struct CountingWriter(usize);
++
++impl std::io::Write for CountingWriter {
++    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
++        self.0 = self.0.saturating_add(buffer.len());
++        Ok(buffer.len())
++    }
++
++    fn flush(&mut self) -> std::io::Result<()> {
++        Ok(())
++    }
++}
++
++pub(super) fn json_size(value: &JsonValue) -> usize {
++    let mut writer = CountingWriter(0);
++    serde_json::to_writer(&mut writer, value).map_or(usize::MAX, |()| writer.0)
++}
++
+ fn next_runtime_command(
+     event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
+     command_rx: &std_mpsc::Receiver<RuntimeCommand>,
+@@ -304,16 +383,11 @@ fn next_runtime_command(
+ }
+ 
+ fn capture_scope_send_error(
+-    scope: &mut v8::PinScope<'_, '_>,
++    _scope: &mut v8::PinScope<'_, '_>,
+     event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
+     error_text: Option<String>,
+ ) {
+-    let stored_value_writes = scope
+-        .get_slot::<RuntimeState>()
+-        .map(|state| state.stored_value_writes.clone())
+-        .unwrap_or_default();
+-
+-    send_result(event_tx, stored_value_writes, error_text);
++    send_result(event_tx, HashMap::new(), error_text);
+ }
+ 
+ fn send_result(
+@@ -340,6 +414,7 @@ mod tests {
+     use super::RuntimeCommand;
+     use super::RuntimeControlCommand;
+     use super::RuntimeEvent;
++    use super::RuntimeLimits;
+     use super::spawn_runtime;
+     use super::spawn_supervised_runtime_thread;
+     use crate::FunctionCallOutputContentItem;
+@@ -402,6 +477,11 @@ mod tests {
+             event_tx,
+             PendingRuntimeMode::Continue,
+             /*task_failure_handler*/ None,
++            RuntimeLimits {
++                cell: None,
++                committed_state_bytes: None,
++                pending_delegate_calls: None,
++            },
+         )
+         .unwrap();
+ 
+@@ -445,6 +525,11 @@ await new Promise(() => {});
+             event_tx,
+             PendingRuntimeMode::PauseUntilResumed,
+             /*task_failure_handler*/ None,
++            RuntimeLimits {
++                cell: None,
++                committed_state_bytes: None,
++                pending_delegate_calls: None,
++            },
+         )
+         .unwrap();
+ 
+diff --git a/codex-rs/code-mode/src/runtime/module_loader.rs b/codex-rs/code-mode/src/runtime/module_loader.rs
+index 00185edb58..bd087f6fc7 100644
+--- a/codex-rs/code-mode/src/runtime/module_loader.rs
++++ b/codex-rs/code-mode/src/runtime/module_loader.rs
+@@ -1,3 +1,5 @@
++use std::collections::HashMap;
++
+ use serde_json::Value as JsonValue;
+ 
+ use super::CompletionState;
+@@ -131,7 +133,11 @@ pub(super) fn completion_state(
+                 Some(value_to_error_text(scope, result))
+             };
+             CompletionState::Completed {
+-                stored_value_writes,
++                stored_value_writes: if error_text.is_none() {
++                    stored_value_writes
++                } else {
++                    HashMap::new()
++                },
+                 error_text,
+             }
+         }
+diff --git a/codex-rs/code-mode/src/runtime/timers.rs b/codex-rs/code-mode/src/runtime/timers.rs
+index 01c414cefe..52fd152106 100644
+--- a/codex-rs/code-mode/src/runtime/timers.rs
++++ b/codex-rs/code-mode/src/runtime/timers.rs
+@@ -1,3 +1,6 @@
++use std::sync::Arc;
++use std::sync::atomic::Ordering;
++use std::sync::mpsc;
+ use std::thread;
+ use std::time::Duration;
+ 
+@@ -7,6 +10,7 @@ use super::value::value_to_error_text;
+ 
+ pub(super) struct ScheduledTimeout {
+     callback: v8::Global<v8::Function>,
++    _cancellation_tx: mpsc::Sender<()>,
+ }
+ 
+ pub(super) fn schedule_timeout(
+@@ -30,15 +34,42 @@ pub(super) fn schedule_timeout(
+     let state = scope
+         .get_slot_mut::<RuntimeState>()
+         .ok_or_else(|| "runtime state unavailable".to_string())?;
++    if let Some(limits) = state.limits
++        && (state.pending_timeouts.len() >= limits.pending_timers.get() as usize
++            || state.live_timer_workers.load(Ordering::Acquire)
++                >= limits.pending_timers.get() as usize)
++    {
++        let observed = state
++            .pending_timeouts
++            .len()
++            .max(state.live_timer_workers.load(Ordering::Acquire))
++            .saturating_add(1);
++        return Err(format!(
++            "resource limit exceeded: code=resource_exhausted resource=pending_timers limit={} observed={}",
++            limits.pending_timers, observed
++        ));
++    }
+     let timeout_id = state.next_timeout_id;
+     state.next_timeout_id = state.next_timeout_id.saturating_add(1);
+     let runtime_command_tx = state.runtime_command_tx.clone();
+-    state
+-        .pending_timeouts
+-        .insert(timeout_id, ScheduledTimeout { callback });
++    state.live_timer_workers.fetch_add(1, Ordering::AcqRel);
++    let live_timer_workers = Arc::clone(&state.live_timer_workers);
++    let (cancellation_tx, cancellation_rx) = mpsc::channel();
++    state.pending_timeouts.insert(
++        timeout_id,
++        ScheduledTimeout {
++            callback,
++            _cancellation_tx: cancellation_tx,
++        },
++    );
+     thread::spawn(move || {
+-        thread::sleep(Duration::from_millis(delay_ms));
+-        let _ = runtime_command_tx.send(RuntimeCommand::TimeoutFired { id: timeout_id });
++        if matches!(
++            cancellation_rx.recv_timeout(Duration::from_millis(delay_ms)),
++            Err(mpsc::RecvTimeoutError::Timeout)
++        ) {
++            let _ = runtime_command_tx.send(RuntimeCommand::TimeoutFired { id: timeout_id });
++        }
++        live_timer_workers.fetch_sub(1, Ordering::AcqRel);
+     });
+ 
+     Ok(timeout_id)
+diff --git a/codex-rs/code-mode/src/service.rs b/codex-rs/code-mode/src/service.rs
+index 952d9b1d84..130073c8d9 100644
+--- a/codex-rs/code-mode/src/service.rs
++++ b/codex-rs/code-mode/src/service.rs
+@@ -22,6 +22,7 @@ use codex_code_mode_protocol::WaitOutcome;
+ use codex_code_mode_protocol::WaitRequest;
+ use codex_code_mode_protocol::WaitToPendingOutcome;
+ use codex_code_mode_protocol::WaitToPendingRequest;
++use codex_code_mode_protocol::host::CellLimits;
+ use serde_json::Value as JsonValue;
+ use tokio::sync::oneshot;
+ use tokio_util::sync::CancellationToken;
+@@ -88,6 +89,20 @@ pub struct InProcessCodeModeSession {
+     runtime: SessionRuntime<ProtocolDelegate>,
+ }
+ 
++#[must_use = "reserved executions must be started or explicitly released"]
++pub struct ReservedExecution {
++    cell_id: runtime::CellId,
++    request: runtime::CreateCellRequest,
++    observe_mode: runtime::ObserveMode,
++    limits: Option<CellLimits>,
++}
++
++impl ReservedExecution {
++    pub fn cell_id(&self) -> CellId {
++        protocol_cell_id(&self.cell_id)
++    }
++}
++
+ impl InProcessCodeModeSession {
+     pub fn new() -> Self {
+         Self::with_delegate(Arc::new(NoopCodeModeSessionDelegate))
+@@ -111,28 +126,74 @@ impl InProcessCodeModeSession {
+         }
+     }
+ 
++    pub fn with_delegate_task_failure_handler_and_state_limit(
++        delegate: Arc<dyn CodeModeSessionDelegate>,
++        task_failure_handler: Arc<dyn Fn(String) + Send + Sync>,
++        max_committed_state_bytes: usize,
++        max_delegate_calls: usize,
++    ) -> Self {
++        Self {
++            runtime: SessionRuntime::new_with_limits(
++                Arc::new(ProtocolDelegate { delegate }),
++                Some(task_failure_handler),
++                Some(max_committed_state_bytes),
++                Some(max_delegate_calls),
++            ),
++        }
++    }
++
+     pub async fn execute(&self, request: ExecuteRequest) -> Result<StartedCell, String> {
++        self.execute_with_limits(request, /*limits*/ None).await
++    }
++
++    pub async fn execute_with_limits(
++        &self,
++        request: ExecuteRequest,
++        limits: Option<CellLimits>,
++    ) -> Result<StartedCell, String> {
++        let reserved = self.reserve_execute(request, limits).await?;
++        self.start_reserved_execute(reserved).await
++    }
++
++    pub async fn reserve_execute(
++        &self,
++        request: ExecuteRequest,
++        limits: Option<CellLimits>,
++    ) -> Result<ReservedExecution, String> {
+         let yield_time_ms = request.yield_time_ms.unwrap_or(DEFAULT_EXEC_YIELD_TIME_MS);
++        let request = runtime_request(request);
++        let cell_id = self
++            .runtime
++            .reserve_cell()
++            .await
++            .map_err(|error| error.to_string())?;
++        Ok(ReservedExecution {
++            cell_id,
++            request,
++            observe_mode: runtime::ObserveMode::YieldAfter(yield_timeout(yield_time_ms)),
++            limits,
++        })
++    }
++
++    pub async fn release_reserved_execute(&self, reserved: ReservedExecution) {
++        self.runtime.release_reserved_cell(&reserved.cell_id).await;
++    }
++
++    pub async fn start_reserved_execute(
++        &self,
++        reserved: ReservedExecution,
++    ) -> Result<StartedCell, String> {
+         let started = self
+             .runtime
+-            .execute(
+-                runtime_request(request),
+-                runtime::ObserveMode::YieldAfter(yield_timeout(yield_time_ms)),
++            .start_reserved_cell(
++                reserved.cell_id,
++                reserved.request,
++                reserved.observe_mode,
++                reserved.limits,
+             )
+             .await
+             .map_err(|error| error.to_string())?;
+-        let cell_id = protocol_cell_id(&started.cell_id);
+-        let response_cell_id = cell_id.clone();
+-        let (response_tx, response_rx) = oneshot::channel();
+-        tokio::spawn(async move {
+-            let response = started
+-                .initial_event()
+-                .await
+-                .map_err(|error| error.to_string())
+-                .and_then(|event| runtime_response(&response_cell_id, event));
+-            let _ = response_tx.send(response);
+-        });
+-        Ok(StartedCell::from_result_receiver(cell_id, response_rx))
++        Ok(protocol_started_cell(started))
+     }
+ 
+     pub async fn execute_to_pending(
+@@ -159,7 +220,7 @@ impl InProcessCodeModeSession {
+         self.begin_wait(request).await.await
+     }
+ 
+-    async fn begin_wait(
++    pub async fn begin_wait(
+         &self,
+         request: WaitRequest,
+     ) -> CodeModeSessionResultFuture<'static, WaitOutcome> {
+@@ -193,12 +254,31 @@ impl InProcessCodeModeSession {
+     }
+ 
+     pub async fn terminate(&self, cell_id: CellId) -> Result<WaitOutcome, String> {
+-        match self.runtime.terminate(&runtime_cell_id(&cell_id)).await {
+-            Ok(event) => Ok(WaitOutcome::LiveCell(runtime_response(&cell_id, event)?)),
++        self.begin_terminate(cell_id).await.await
++    }
++
++    pub async fn begin_terminate(
++        &self,
++        cell_id: CellId,
++    ) -> CodeModeSessionResultFuture<'static, WaitOutcome> {
++        match self
++            .runtime
++            .begin_terminate(&runtime_cell_id(&cell_id))
++            .await
++        {
++            Ok(pending_event) => Box::pin(async move {
++                match pending_event.event().await {
++                    Ok(event) => Ok(WaitOutcome::LiveCell(runtime_response(&cell_id, event)?)),
++                    Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
++                        Ok(WaitOutcome::MissingCell(missing_cell_response(cell_id)))
++                    }
++                    Err(error) => Err(error.to_string()),
++                }
++            }),
+             Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
+-                Ok(WaitOutcome::MissingCell(missing_cell_response(cell_id)))
++                missing_wait(cell_id)
+             }
+-            Err(error) => Err(error.to_string()),
++            Err(error) => Box::pin(async move { Err(error.to_string()) }),
+         }
+     }
+ 
+@@ -335,6 +415,21 @@ fn runtime_request(request: ExecuteRequest) -> runtime::CreateCellRequest {
+     }
+ }
+ 
++fn protocol_started_cell(started: runtime::StartedCell) -> StartedCell {
++    let cell_id = protocol_cell_id(&started.cell_id);
++    let response_cell_id = cell_id.clone();
++    let (response_tx, response_rx) = oneshot::channel();
++    tokio::spawn(async move {
++        let response = started
++            .initial_event()
++            .await
++            .map_err(|error| error.to_string())
++            .and_then(|event| runtime_response(&response_cell_id, event));
++        let _ = response_tx.send(response);
++    });
++    StartedCell::from_result_receiver(cell_id, response_rx)
++}
++
+ fn runtime_cell_id(cell_id: &CellId) -> runtime::CellId {
+     runtime::CellId::new(cell_id.as_str())
+ }
+diff --git a/codex-rs/code-mode/src/session_runtime/mod.rs b/codex-rs/code-mode/src/session_runtime/mod.rs
+index cc014230f9..9d22f5f259 100644
+--- a/codex-rs/code-mode/src/session_runtime/mod.rs
++++ b/codex-rs/code-mode/src/session_runtime/mod.rs
+@@ -1,12 +1,14 @@
+ mod types;
+ 
+ use std::collections::HashMap;
++use std::collections::HashSet;
+ use std::future::Future;
+ use std::pin::Pin;
+ use std::sync::Arc;
+ use std::sync::atomic::AtomicU64;
+ use std::sync::atomic::Ordering;
+ 
++use codex_code_mode_protocol::host::CellLimits;
+ use serde_json::Value as JsonValue;
+ use tokio::sync::Mutex;
+ use tokio_util::sync::CancellationToken;
+@@ -33,6 +35,7 @@ use crate::cell_actor::CellHost;
+ use crate::cell_actor::CellState;
+ use crate::cell_actor::CellToolCall;
+ use crate::cell_actor::CompletionCommit;
++use crate::runtime::RuntimeLimits;
+ 
+ type RuntimeEventFuture = Pin<Box<dyn Future<Output = Result<CellEvent, Error>> + Send + 'static>>;
+ 
+@@ -42,33 +45,62 @@ pub(crate) struct SessionRuntime<D: SessionRuntimeDelegate> {
+ }
+ 
+ struct Inner<D: SessionRuntimeDelegate> {
+-    stored_values: Mutex<HashMap<String, JsonValue>>,
++    stored_values: Mutex<StoredValues>,
+     cells: Mutex<HashMap<CellId, CellHandle>>,
++    reserved_cells: Mutex<HashSet<CellId>>,
+     cell_tasks: TaskTracker,
+     shutdown_token: CancellationToken,
+     delegate: Arc<D>,
+     task_failure_handler: Option<TaskFailureHandler>,
+     next_cell_id: AtomicU64,
++    max_committed_state_bytes: Option<usize>,
++    max_pending_delegate_calls: Option<usize>,
++}
++
++#[derive(Default)]
++struct StoredValues {
++    values: HashMap<String, JsonValue>,
++    bytes: usize,
+ }
+ 
+ impl<D: SessionRuntimeDelegate> SessionRuntime<D> {
+     pub(crate) fn new(delegate: Arc<D>) -> Self {
+-        Self::new_with_task_failure_handler(delegate, /*task_failure_handler*/ None)
++        Self::new_with_limits(
++            delegate, /*task_failure_handler*/ None, /*max_committed_state_bytes*/ None,
++            /*max_pending_delegate_calls*/ None,
++        )
+     }
+ 
+     pub(crate) fn new_with_task_failure_handler(
+         delegate: Arc<D>,
+         task_failure_handler: Option<TaskFailureHandler>,
++    ) -> Self {
++        Self::new_with_limits(
++            delegate,
++            task_failure_handler,
++            /*max_committed_state_bytes*/ None,
++            /*max_pending_delegate_calls*/ None,
++        )
++    }
++
++    pub(crate) fn new_with_limits(
++        delegate: Arc<D>,
++        task_failure_handler: Option<TaskFailureHandler>,
++        max_committed_state_bytes: Option<usize>,
++        max_pending_delegate_calls: Option<usize>,
+     ) -> Self {
+         Self {
+             inner: Arc::new(Inner {
+-                stored_values: Mutex::new(HashMap::new()),
++                stored_values: Mutex::new(StoredValues::default()),
+                 cells: Mutex::new(HashMap::new()),
++                reserved_cells: Mutex::new(HashSet::new()),
+                 cell_tasks: TaskTracker::new(),
+                 shutdown_token: CancellationToken::new(),
+                 delegate,
+                 task_failure_handler,
+                 next_cell_id: AtomicU64::new(1),
++                max_committed_state_bytes,
++                max_pending_delegate_calls,
+             }),
+         }
+     }
+@@ -78,12 +110,50 @@ impl<D: SessionRuntimeDelegate> SessionRuntime<D> {
+         request: CreateCellRequest,
+         initial_observe_mode: ObserveMode,
+     ) -> Result<StartedCell, Error> {
++        self.execute_with_limits(request, initial_observe_mode, /*limits*/ None)
++            .await
++    }
++
++    pub(crate) async fn execute_with_limits(
++        &self,
++        request: CreateCellRequest,
++        initial_observe_mode: ObserveMode,
++        limits: Option<CellLimits>,
++    ) -> Result<StartedCell, Error> {
++        let cell_id = self.reserve_cell().await?;
++        self.start_reserved_cell(cell_id, request, initial_observe_mode, limits)
++            .await
++    }
++
++    pub(crate) async fn reserve_cell(&self) -> Result<CellId, Error> {
+         if self.inner.shutdown_token.is_cancelled() {
+             return Err(Error::ShuttingDown);
+         }
+         let cell_id = self.allocate_cell_id()?;
++        let mut reserved_cells = self.inner.reserved_cells.lock().await;
++        if self.inner.shutdown_token.is_cancelled() {
++            return Err(Error::ShuttingDown);
++        }
++        reserved_cells.insert(cell_id.clone());
++        Ok(cell_id)
++    }
++
++    pub(crate) async fn release_reserved_cell(&self, cell_id: &CellId) {
++        self.inner.reserved_cells.lock().await.remove(cell_id);
++    }
++
++    pub(crate) async fn start_reserved_cell(
++        &self,
++        cell_id: CellId,
++        request: CreateCellRequest,
++        initial_observe_mode: ObserveMode,
++        limits: Option<CellLimits>,
++    ) -> Result<StartedCell, Error> {
++        if !self.inner.reserved_cells.lock().await.remove(&cell_id) {
++            return Err(Error::MissingCell(cell_id));
++        }
+         let initial_event = self
+-            .start_cell(cell_id.clone(), request, initial_observe_mode)
++            .start_cell(cell_id.clone(), request, initial_observe_mode, limits)
+             .await?;
+         Ok(StartedCell {
+             cell_id,
+@@ -117,7 +187,7 @@ impl<D: SessionRuntimeDelegate> SessionRuntime<D> {
+         })
+     }
+ 
+-    pub(crate) async fn terminate(&self, cell_id: &CellId) -> Result<CellEvent, Error> {
++    pub(crate) async fn begin_terminate(&self, cell_id: &CellId) -> Result<PendingEvent, Error> {
+         let handle = self
+             .inner
+             .cells
+@@ -126,10 +196,9 @@ impl<D: SessionRuntimeDelegate> SessionRuntime<D> {
+             .get(cell_id)
+             .cloned()
+             .ok_or_else(|| Error::MissingCell(cell_id.clone()))?;
+-        handle
+-            .terminate()
+-            .await
+-            .map_err(|error| actor_error(cell_id, error))
++        Ok(PendingEvent {
++            event: map_actor_event(cell_id.clone(), handle.terminate()),
++        })
+     }
+ 
+     pub(crate) async fn shutdown(&self) -> Result<(), Error> {
+@@ -158,8 +227,9 @@ impl<D: SessionRuntimeDelegate> SessionRuntime<D> {
+         cell_id: CellId,
+         request: CreateCellRequest,
+         initial_observe_mode: ObserveMode,
++        limits: Option<CellLimits>,
+     ) -> Result<RuntimeEventFuture, Error> {
+-        let stored_values = self.inner.stored_values.lock().await.clone();
++        let stored_values = self.inner.stored_values.lock().await.values.clone();
+         let host = Arc::new(RuntimeCellHost {
+             cell_id: cell_id.clone(),
+             inner: Arc::clone(&self.inner),
+@@ -179,6 +249,11 @@ impl<D: SessionRuntimeDelegate> SessionRuntime<D> {
+             initial_observe_mode,
+             cell_state,
+             self.inner.task_failure_handler.clone(),
++            RuntimeLimits {
++                cell: limits,
++                committed_state_bytes: self.inner.max_committed_state_bytes,
++                pending_delegate_calls: self.inner.max_pending_delegate_calls,
++            },
+         )
+         .map_err(Error::Runtime)?;
+         cells.insert(cell_id.clone(), handle);
+@@ -273,7 +348,7 @@ impl<D: SessionRuntimeDelegate> CellHost for RuntimeCellHost<D> {
+     async fn commit_completion(
+         &self,
+         stored_value_writes: HashMap<String, JsonValue>,
+-        event: CellEvent,
++        mut event: CellEvent,
+         pending_initial_yield_items: Option<Vec<OutputItem>>,
+         cell_state: Arc<CellState>,
+     ) -> CompletionCommit {
+@@ -285,8 +360,34 @@ impl<D: SessionRuntimeDelegate> CellHost for RuntimeCellHost<D> {
+             }
+             stored_values = self.inner.stored_values.lock() => stored_values,
+         };
++        let observed =
++            stored_value_writes
++                .iter()
++                .fold(stored_values.bytes, |bytes, (key, value)| {
++                    let old_size = stored_values
++                        .values
++                        .get(key)
++                        .map_or(0, |value| entry_size(key, value));
++                    bytes
++                        .saturating_sub(old_size)
++                        .saturating_add(entry_size(key, value))
++                });
++        let commit_writes = match self.inner.max_committed_state_bytes {
++            Some(limit) if observed > limit => {
++                if let CellEvent::Completed { error_text, .. } = &mut event {
++                    *error_text = Some(format!(
++                        "resource limit exceeded: code=resource_exhausted resource=committed_state_bytes limit={limit} observed={observed}"
++                    ));
++                }
++                false
++            }
++            _ => true,
++        };
+         cell_state.commit_completion(event, pending_initial_yield_items, || {
+-            stored_values.extend(stored_value_writes);
++            if commit_writes {
++                stored_values.values.extend(stored_value_writes);
++                stored_values.bytes = observed;
++            }
+         })
+     }
+ 
+@@ -296,6 +397,28 @@ impl<D: SessionRuntimeDelegate> CellHost for RuntimeCellHost<D> {
+     }
+ }
+ 
++fn entry_size(key: &str, value: &JsonValue) -> usize {
++    key.len().saturating_add(json_size(value))
++}
++
++struct CountingWriter(usize);
++
++impl std::io::Write for CountingWriter {
++    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
++        self.0 = self.0.saturating_add(buffer.len());
++        Ok(buffer.len())
++    }
++
++    fn flush(&mut self) -> std::io::Result<()> {
++        Ok(())
++    }
++}
++
++fn json_size(value: &JsonValue) -> usize {
++    let mut writer = CountingWriter(0);
++    serde_json::to_writer(&mut writer, value).map_or(usize::MAX, |()| writer.0)
++}
++
+ fn map_actor_event(cell_id: CellId, event: CellEventFuture) -> RuntimeEventFuture {
+     Box::pin(async move { event.await.map_err(|error| actor_error(&cell_id, error)) })
+ }
+diff --git a/codex-rs/code-mode/src/session_runtime/tests.rs b/codex-rs/code-mode/src/session_runtime/tests.rs
+index 1d90179bb3..b9d6daecec 100644
+--- a/codex-rs/code-mode/src/session_runtime/tests.rs
++++ b/codex-rs/code-mode/src/session_runtime/tests.rs
+@@ -142,6 +142,7 @@ async fn termination_rejects_a_waiting_store_commit_before_the_next_cell_can_loa
+             .stored_values
+             .lock()
+             .await
++            .values
+             .contains_key("candidate")
+     );
+ 
+diff --git a/codex-rs/code-mode/src/v8_init.rs b/codex-rs/code-mode/src/v8_init.rs
+index 0d00d9fad5..f235f8bdbb 100644
+--- a/codex-rs/code-mode/src/v8_init.rs
++++ b/codex-rs/code-mode/src/v8_init.rs
+@@ -1,4 +1,5 @@
+ use std::sync::OnceLock;
++use std::thread::available_parallelism;
+ 
+ /// Controls whether V8 may generate executable code at runtime.
+ #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+@@ -14,6 +15,17 @@ struct V8Initialization {
+ }
+ 
+ static V8_INITIALIZATION: OnceLock<Result<V8Initialization, String>> = OnceLock::new();
++const MAX_DEFAULT_PLATFORM_WORKERS: usize = 4;
++
++fn bounded_worker_threads(reported_parallelism: Option<usize>) -> u32 {
++    reported_parallelism
++        .unwrap_or(1)
++        .clamp(1, MAX_DEFAULT_PLATFORM_WORKERS) as u32
++}
++
++fn default_platform_worker_threads() -> u32 {
++    bounded_worker_threads(available_parallelism().ok().map(usize::from))
++}
+ 
+ /// Initializes the process-wide V8 platform with the requested JIT mode.
+ ///
+@@ -46,7 +58,7 @@ fn initialize_v8_with_mode(jit_mode: V8JitMode) -> Result<V8Initialization, Stri
+         V8JitMode::Enabled => {}
+         V8JitMode::Disabled => v8::V8::set_flags_from_string("--jitless"),
+     }
+-    let platform = v8::new_default_platform(0, false).make_shared();
++    let platform = v8::new_default_platform(default_platform_worker_threads(), false).make_shared();
+     v8::V8::initialize_platform(platform.clone());
+     v8::V8::initialize();
+     Ok(V8Initialization {

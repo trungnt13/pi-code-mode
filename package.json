@@ -1,0 +1,59 @@
+{
+	"name": "pi-code-mode",
+	"version": "0.1.0",
+	"description": "Bounded native-freeform and function-input JavaScript code mode for Pi",
+	"type": "module",
+	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"code-mode"
+	],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"vendor",
+		"ARCHITECTURE.md",
+		"LICENSE",
+		"PROVENANCE.md",
+		"README.md",
+		"THIRD_PARTY_NOTICES.md"
+	],
+	"pi": {
+		"extensions": [
+			"./dist/index.js"
+		]
+	},
+	"scripts": {
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+		"typecheck": "tsc --noEmit",
+		"build": "npm run clean && tsc -p tsconfig.build.json",
+		"lint": "biome check src",
+		"format": "biome format --write src"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.5",
+		"@earendil-works/pi-agent-core": "0.81.1",
+		"@earendil-works/pi-ai": "0.81.1",
+		"@earendil-works/pi-coding-agent": "0.81.1",
+		"@types/node": "24.12.4",
+		"typebox": "1.1.38",
+		"typescript": "5.9.3"
+	}
+}
