@@ -6,8 +6,8 @@ native freeform `exec` only when model API is exactly `openai-codex-responses`,
 provider is exactly `openai-codex`, and model ID starts with `gpt-5.6`. Every other model uses function input `{ code: string }`.
 
 Disabled load imports only inert facade and dependency-free constants. UUIDs, schemas, Pi tool
-factories, controller, host code, and provider bridge load on first `/code-mode on`. Before that,
-`status`, `off`, model change, and shutdown remain lightweight no-ops.
+factories, controller, host code, and provider bridge load when `/code-mode` first enables the
+extension. Before that, status, model change, and shutdown remain lightweight no-ops.
 
 ## Install
 
@@ -25,8 +25,8 @@ pi install git:github.com/trungnt13/pi-code-mode@<tag-or-commit>
 
 Pi loads `src/index.ts` directly through its TypeScript extension loader. No
 manual dependency install or build is required. Restart Pi or run `/reload`,
-then use `/code-mode status` to verify the extension loaded. Code mode remains
-off until `/code-mode on` succeeds.
+then use `/code-mode-status` to verify the extension loaded. Code mode remains
+off until `/code-mode` successfully toggles it on.
 
 For local development:
 
@@ -65,8 +65,8 @@ source extension, not a compiled Node library.
 
 - `auto` (default): native freeform only for eligible GPT-5.6 OpenAI Codex models.
 - `function`: always keep `{ code: string }`; provider registry is untouched.
-- `freeform`: require eligible model or reject `/code-mode on` before tool or
-  provider mutation.
+- `freeform`: require eligible model or reject an enabling `/code-mode` toggle
+  before tool or provider mutation.
 
 Native transport matches published Pi 0.81.1 Codex SSE behavior: it posts to `<base>/codex/responses` (default `https://chatgpt.com/backend-api`), derives `chatgpt-account-id` from OAuth JWT, and sets Pi Codex headers. It intentionally uses bounded SSE only. WebSocket and zstd paths are excluded; timeout, cancellation, response callback, retry count, and retry-delay cap remain supported. Required authentication and protocol headers cannot be overridden.
 
@@ -75,8 +75,8 @@ Disable, model change, and session shutdown restore prior provider config or
 absence. If another extension replaces or mutates overlay, code mode leaves
 foreign state untouched, disables, and reports ownership collision.
 
-`/code-mode on` validates identity without starting host. First `exec` copies
-bytes from validated open file handle to package-owned private `0700` temporary
+An enabling `/code-mode` toggle validates identity without starting host. First
+`exec` copies bytes from validated open file handle to package-owned private `0700` temporary
 directory, verifies copied size/hash, and spawns only private copy.
 
 Host receives a fixed minimal environment. POSIX receives `PATH=/usr/bin:/bin`,
@@ -87,12 +87,11 @@ parent variables, including credentials, tokens, and proxies, are inherited.
 
 ## Commands
 
-- `/code-mode on`
-- `/code-mode off`
-- `/code-mode status`
+- `/code-mode` toggles code mode on or off.
+- `/code-mode-status` reports current state without changing it.
 
-On first successful enable, extension claims `exec` and `wait` until reload
-because Pi cannot unregister tools. Disable restores previous active tool order.
+On first successful enabling toggle, extension claims `exec` and `wait` until
+reload because Pi cannot unregister tools. A disabling toggle restores previous active tool order.
 If registration throws after it may have recorded either tool, status reports
 `partial until reload`; another enable fails until reload.
 

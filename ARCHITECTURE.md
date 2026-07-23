@@ -16,9 +16,9 @@ Expected provider behavior:
 - Other providers use normal function input `{ code: string }`.
 - Unsupported providers reject any request that forces freeform before network work starts.
 
-Extension is off by default. Import and extension load register only `/code-mode`. Disabled load
-must not register tools, replace providers, start a host, touch filesystem or network, create a
-timer, or install an exit hook.
+Extension is off by default. Import and extension load register only `/code-mode` and
+`/code-mode-status`. Disabled load must not register tools, replace providers, start a host, touch
+filesystem or network, create a timer, or install an exit hook.
 
 This design depends only on published Pi APIs and package-owned code. It does not import protected
 Pi or Codex checkout internals. Protected repositories are source inputs during the relocation and
@@ -31,7 +31,7 @@ reported as such; it is not converted into a claim.
 
 Extension uses these public capabilities:
 
-- `registerCommand` for `/code-mode`;
+- `registerCommand` for `/code-mode` and `/code-mode-status`;
 - lazy `registerTool` for `exec` and `wait`;
 - `getAllTools`, `getActiveTools`, and `setActiveTools` for conflict detection and activation;
 - public coding-tool factories for default nested tools;
@@ -77,11 +77,11 @@ local stdio protocol
 ```
 
 Controller is sole owner of active-tool replacement, overlay transaction, host generation, and
-live cells. One serialized lifecycle mutex prevents overlapping on/off/model/shutdown changes.
+live cells. One serialized lifecycle mutex prevents overlapping toggle/model/shutdown changes.
 Cell operations have separate bounded scheduling and cannot mutate controller ownership.
 
-No component starts work at module scope. Heavy state is created on first `/code-mode on`; host
-process is created on first cell, after provision validation.
+No component starts work at module scope. Heavy state is created when `/code-mode` first toggles
+on; host process is created on first cell, after provision validation.
 
 Current source map:
 
@@ -100,24 +100,24 @@ Current source map:
 ### 4.1 Load while off
 
 1. Store factory options by reference and construct only a small lifecycle mutex and command closure.
-2. Register `/code-mode`.
+2. Register `/code-mode` and `/code-mode-status`.
 3. Register lifecycle handlers that do nothing unless controller owns live state.
 4. Load only `index` and dependency-free `constants`. Do no UUID, schema, tool snapshot, host,
    filesystem, network, timer, provider, tool, or heavy module-graph work.
 
-`/code-mode status` is read-only. It reports off/on, claimed-name state, active provider path,
+`/code-mode-status` is read-only. It reports off/on, claimed-name state, active provider path,
 host configuration presence, live/yielded cells, and any unresolved provider collision. It does
-not validate or start host. Before first `on`, `status`, `off`, `model_select`, and
+not validate or start host. Before first enabling toggle, status, `model_select`, and
 `session_shutdown` do not import activated runtime.
 
 ### 4.2 Enable transaction
 
-`/code-mode on` is allowed only when Pi reports agent idle and no lifecycle operation is running.
-Repeated `on` while enabled is an idempotent status response.
+`/code-mode` toggles only when Pi reports agent idle and no lifecycle operation is running. It
+enables while off and disables while on.
 
-First `on` imports `src/runtime/extension.ts` inside same serialized lifecycle queue, then creates
-UUID ownership marker, schemas, explicit-tool snapshot, and activated runtime. Concurrent
-`on`/`off`/model/shutdown requests cannot observe or publish half-created engine. A failed module
+First enabling toggle imports `src/runtime/extension.ts` inside same serialized lifecycle queue,
+then creates UUID ownership marker, schemas, explicit-tool snapshot, and activated runtime.
+Concurrent toggle/model/shutdown requests cannot observe or publish half-created engine. A failed module
 load keeps facade off and unclaimed with bounded status error. Validation or enable failures after
 successful load follow normal transaction and claim rules below.
 
@@ -178,8 +178,8 @@ explicitly.
 
 ### 4.4 Disable and lifecycle teardown
 
-`/code-mode off`, `model_select`, `session_shutdown` for reload/new/resume/fork/quit, and package
-shutdown all use one idempotent teardown:
+A disabling `/code-mode` toggle, `model_select`, `session_shutdown` for
+reload/new/resume/fork/quit, and package shutdown all use one idempotent teardown:
 
 1. Stop accepting new `exec`, `wait`, and nested calls.
 2. Abort active cells and reject pending waiters with a specific disabled/cancelled result.
@@ -713,7 +713,7 @@ files outside package source and must be reproducible.
 
 - Disabled import records zero tool registration, provider overlay, spawn, filesystem, network,
   timer, and exit-hook events except `/code-mode` command registration.
-- First and repeated on/off cycles restore exact active-tool order.
+- First and repeated toggle cycles restore exact active-tool order.
 - Tool-name fixtures cover allowed state (both names absent, then both package source/schema
   markers resolve and exact active list is `["exec", "wait"]`) and excluded state (either name
   already resolves to a foreign definition). Excluded definitions are neither registered over nor
@@ -723,7 +723,7 @@ files outside package source and must be reproducible.
   restores absence; `config` installs owned overlay and restores exact captured config; `native`
   rejects before any mutation. Fixtures call both public registry getters before and after each
   step.
-- Provider on/off, model change, reload, and session switch restore exact prior `none`/`config`
+- Provider enable/disable toggles, model change, reload, and session switch restore exact prior `none`/`config`
   registration only when native object identity, retained stream identity, absent config, and
   expected non-stream structural/value comparison all pass.
 - Collision fixture changes provider while enabled and proves foreign state remains byte/value and

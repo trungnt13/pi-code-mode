@@ -45,6 +45,7 @@ export function createCodeModeExtension(options: CodeModeExtensionOptions = {}):
 interface ExtensionEngine {
 	enable(context: ExtensionCommandContext): Promise<void>;
 	disable(): Promise<void>;
+	isEnabled(): boolean;
 	statusText(): string;
 }
 
@@ -60,21 +61,21 @@ class LazyExtensionRuntime {
 
 	register(): void {
 		this.pi.registerCommand("code-mode", {
-			description: "Control bounded code mode: /code-mode on|off|status",
+			description: "Toggle bounded code mode on or off",
 			handler: async (args, context) => {
-				const action = args.trim().toLowerCase();
-				if (action !== "on" && action !== "off" && action !== "status") {
-					throw new Error("Usage: /code-mode on|off|status");
-				}
-				if (action === "status") {
-					context.ui.notify(this.statusText(), "info");
-					return;
-				}
+				if (args.trim()) throw new Error("Usage: /code-mode");
 				await this.mutex.run(async () => {
-					if (!context.isIdle()) throw new Error(`/code-mode ${action} requires idle agent`);
-					if (action === "on") await this.enable(context);
-					else await this.engine?.disable();
+					if (!context.isIdle()) throw new Error("/code-mode requires idle agent");
+					if (this.engine?.isEnabled()) await this.engine.disable();
+					else await this.enable(context);
 				});
+				context.ui.notify(this.statusText(), "info");
+			},
+		});
+		this.pi.registerCommand("code-mode-status", {
+			description: "Show bounded code mode status",
+			handler: async (args, context) => {
+				if (args.trim()) throw new Error("Usage: /code-mode-status");
 				context.ui.notify(this.statusText(), "info");
 			},
 		});

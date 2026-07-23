@@ -38,6 +38,7 @@ type NativeOverlayTransaction = {
 export interface ExtensionEngine {
 	enable(context: ExtensionCommandContext): Promise<void>;
 	disable(): Promise<void>;
+	isEnabled(): boolean;
 	statusText(): string;
 }
 
@@ -221,6 +222,10 @@ class ExtensionRuntime {
 					: "Code-mode enable and active-tool restore failed",
 			);
 		}
+	}
+
+	isEnabled(): boolean {
+		return this.enabled;
 	}
 
 	async disable(): Promise<void> {

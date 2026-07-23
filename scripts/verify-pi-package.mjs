@@ -96,8 +96,8 @@ function assertRpcLoad() {
 	}
 	const input = [
 		JSON.stringify({ id: "commands", type: "get_commands" }),
-		JSON.stringify({ id: "status", type: "prompt", message: "/code-mode status" }),
-		JSON.stringify({ id: "on", type: "prompt", message: "/code-mode on" }),
+		JSON.stringify({ id: "status", type: "prompt", message: "/code-mode-status" }),
+		JSON.stringify({ id: "toggle", type: "prompt", message: "/code-mode" }),
 	].join("\n");
 	const result = spawnSync(pi, args, {
 		cwd: root,
@@ -128,12 +128,16 @@ function assertRpcLoad() {
 		(command) => command.name === "code-mode" && command.source === "extension",
 	);
 	if (!codeMode) fail("Installed extension did not register /code-mode");
+	const codeModeStatus = commandResponse.data?.commands?.find(
+		(command) => command.name === "code-mode-status" && command.source === "extension",
+	);
+	if (!codeModeStatus) fail("Installed extension did not register /code-mode-status");
 	const sourcePath = codeMode.sourceInfo?.path ?? codeMode.path;
 	if (typeof sourcePath !== "string" || !sourcePath.replaceAll("\\", "/").endsWith("/src/index.ts")) {
 		fail(`/code-mode has unexpected source path: ${String(sourcePath)}`);
 	}
 	if (!events.some((event) => event.id === "status" && event.success === true)) {
-		fail("/code-mode status did not succeed");
+		fail("/code-mode-status did not succeed");
 	}
 	if (
 		!events.some(
@@ -145,13 +149,13 @@ function assertRpcLoad() {
 				event.message.includes("tools: unclaimed"),
 		)
 	) {
-		fail("/code-mode status did not report expected inactive state");
+		fail("/code-mode-status did not report expected inactive state");
 	}
 	const enableError = events.find(
 		(event) => event.type === "extension_error" && event.extensionPath === "command:code-mode",
 	);
 	if (enableError?.error !== "Code-mode host is not configured") {
-		fail(`/code-mode on did not reach host validation: ${JSON.stringify(enableError)}`);
+		fail(`/code-mode toggle did not reach host validation: ${JSON.stringify(enableError)}`);
 	}
 	if (events.some((event) => String(event.error ?? "").includes("runtime load failed"))) {
 		fail("Lazy TypeScript runtime import failed");
