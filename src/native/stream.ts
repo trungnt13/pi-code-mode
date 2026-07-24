@@ -411,6 +411,7 @@ export async function processNativeEvents(
 	const reasoningBlocks = new Map<string, ThinkingBlock>();
 	const budget = new StreamBudget();
 	let terminal = false;
+	let incompleteItem = false;
 	let createdResponseId: string | undefined;
 	let responsePhase: "queued" | "in_progress" | undefined;
 	for await (const event of events) {
@@ -436,9 +437,9 @@ export async function processNativeEvents(
 			budget.addItem();
 			const item = asRecord(event.item, "output item");
 			const itemType = requireString(item.type, "output item type");
-			if (item.status !== "in_progress") throw new Error("Added native output item has invalid status");
 			const itemId = uniqueWireId(item.id, `${itemType} item`, itemIds, budget);
 			if (itemType === "custom_tool_call") {
+				validateItemStatus(item, "added", []);
 				rejectToolIdDelimiter(itemId, "custom item");
 				const callId = uniqueWireId(item.call_id, "custom call", callIds, budget);
 				rejectToolIdDelimiter(callId, "custom call");
@@ -464,6 +465,7 @@ export async function processNativeEvents(
 				});
 				stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 			} else if (itemType === "function_call") {
+				validateItemStatus(item, "added", ["in_progress"]);
 				rejectToolIdDelimiter(itemId, "function item");
 				const callId = uniqueWireId(item.call_id, "function call", callIds, budget);
 				rejectToolIdDelimiter(callId, "function call");
@@ -493,6 +495,7 @@ export async function processNativeEvents(
 				});
 				stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 			} else if (itemType === "message") {
+				validateItemStatus(item, "added", ["in_progress"], true);
 				const block: TextBlock = { type: "text", text: "" };
 				output.content.push(block);
 				states.set(outputIndex, {
@@ -505,6 +508,7 @@ export async function processNativeEvents(
 				});
 				stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 			} else if (itemType === "reasoning") {
+				validateItemStatus(item, "added", ["in_progress"]);
 				const block: ThinkingBlock = { type: "thinking", thinking: "" };
 				output.content.push(block);
 				states.set(outputIndex, {
@@ -578,6 +582,8 @@ export async function processNativeEvents(
 			const state = requireState(states, event.output_index, "function");
 			if (state.done) throw new Error("Duplicate function arguments done");
 			matchItemId(event, state.itemId, "function done");
+			if (requireString(event.name, "function done name") !== state.block.name)
+				throw new Error("Function arguments done name mismatch");
 			const text = requireStringAllowEmpty(event.arguments, "function arguments");
 			const suffix = appendCompletionSuffix(
 				state.chunks,
@@ -737,8 +743,8 @@ export async function processNativeEvents(
 			const state = states.get(outputIndex);
 			if (!state) throw new Error(`Native completion targets unknown output index ${outputIndex}`);
 			const item = asRecord(event.item, "completed output item");
-			if (item.status !== "completed") throw new Error("Native output item has non-completed status");
 			if (state.kind === "custom") {
+				validateItemStatus(item, "completed", []);
 				if (
 					item.type !== "custom_tool_call" ||
 					item.id !== state.itemId ||
@@ -764,6 +770,7 @@ export async function processNativeEvents(
 				output.content[state.index] = toolCall;
 				stream.push({ type: "toolcall_end", contentIndex: state.index, toolCall, partial: output });
 			} else if (state.kind === "function") {
+				validateItemStatus(item, "completed", ["completed"]);
 				if (
 					item.type !== "function_call" ||
 					item.id !== state.itemId ||
@@ -789,8 +796,10 @@ export async function processNativeEvents(
 				delete state.block.partialJson;
 				stream.push({ type: "toolcall_end", contentIndex: state.index, toolCall: state.block, partial: output });
 			} else if (state.kind === "text") {
-				if (item.type !== "message" || item.id !== state.itemId || item.status !== "completed")
+				validateItemStatus(item, "completed", ["completed", "incomplete"], true);
+				if (item.type !== "message" || item.id !== state.itemId)
 					throw new Error("Text completion identity or status mismatch");
+				if (item.status === "incomplete") incompleteItem = true;
 				const text = completedText(item, state);
 				const streamed = finishTextParts(state);
 				if (streamed && text !== streamed) throw new Error("Text completion differs from streamed text");
@@ -802,8 +811,10 @@ export async function processNativeEvents(
 				});
 				stream.push({ type: "text_end", contentIndex: state.index, content: state.block.text, partial: output });
 			} else if (state.kind === "thinking") {
+				validateItemStatus(item, "completed", ["completed", "incomplete"]);
 				if (item.type !== "reasoning" || item.id !== state.itemId)
 					throw new Error("Reasoning completion identity mismatch");
+				if (item.status === "incomplete") incompleteItem = true;
 				const thinking = completedReasoning(item);
 				const streamed = finishThinkingParts(state);
 				if (streamed && thinking && thinking !== streamed)
@@ -834,6 +845,8 @@ export async function processNativeEvents(
 			const response = asRecord(event.response, "terminal response");
 			if (response.status !== "completed" && response.status !== "incomplete")
 				throw new Error("Native terminal response status must be completed or incomplete");
+			if (response.status === "completed" && incompleteItem)
+				throw new Error("Completed native response contains an incomplete output item");
 			const terminalId = boundedId(response.id, "response");
 			if (createdResponseId !== undefined && terminalId !== createdResponseId)
 				throw new Error("Native terminal response ID mismatch");
@@ -1240,6 +1253,18 @@ function validateWebSearchItem(item: Json, status: "in_progress" | "completed"):
 		return;
 	}
 	throw new Error("Unsupported hosted web search action");
+}
+
+function validateItemStatus(
+	item: Json,
+	phase: "added" | "completed",
+	allowed: readonly string[],
+	required = false,
+): void {
+	const present = Object.hasOwn(item, "status");
+	if ((!present && required) || (present && (typeof item.status !== "string" || !allowed.includes(item.status)))) {
+		throw new Error(`Native output item has invalid ${phase} status`);
+	}
 }
 function completedReasoning(item: Json): string {
 	const source =

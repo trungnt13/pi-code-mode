@@ -10,6 +10,7 @@ export type { CellLimits, JsonStructureLimits, SessionLimits } from "./constants
 export {
 	CLIENT_FRAME_BYTES,
 	CONTROLLER_CELL_CLOSE_MS,
+	CONTROLLER_DELEGATE_DRAIN_MS,
 	CONTROLLER_LOSS_CLEANUP_MS,
 	CONTROLLER_OPERATION_DRAIN_MS,
 	CONTROLLER_PREPARE_CLOSE_MS,
@@ -33,6 +34,7 @@ export {
 	NATIVE_MAX_REQUEST_BYTES,
 	NATIVE_MAX_RETRIES,
 	NATIVE_MAX_STREAM_BYTES,
+	NATIVE_OVERLAY_DRAIN_MS,
 } from "./constants.js";
 export type {
 	AnyToolDefinition,

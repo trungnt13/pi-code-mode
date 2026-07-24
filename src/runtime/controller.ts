@@ -4,6 +4,7 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	CONTROLLER_CELL_CLOSE_MS,
+	CONTROLLER_DELEGATE_DRAIN_MS,
 	CONTROLLER_LOSS_CLEANUP_MS,
 	CONTROLLER_OPERATION_DRAIN_MS,
 	CONTROLLER_PREPARE_CLOSE_MS,
@@ -18,6 +19,7 @@ import { FairScheduler } from "./scheduler.js";
 const DEFAULT_TOKENS = 10_000;
 export {
 	CONTROLLER_CELL_CLOSE_MS,
+	CONTROLLER_DELEGATE_DRAIN_MS,
 	CONTROLLER_LOSS_CLEANUP_MS,
 	CONTROLLER_OPERATION_DRAIN_MS,
 	CONTROLLER_PREPARE_CLOSE_MS,
@@ -57,7 +59,9 @@ export class CodeModeController {
 	private readonly scheduler: FairScheduler;
 	private readonly controllerAbort = new AbortController();
 	private readonly operations = new Set<Promise<unknown>>();
+	private readonly delegates = new Set<Promise<unknown>>();
 	private readonly cells = new Map<string, CellRuntime>();
+	private readonly activeWaits = new Set<string>();
 	private readonly lossCleanups = new Set<Promise<void>>();
 	private readonly lossCleanupErrors: unknown[] = [];
 	private lifecycle: Lifecycle = "open";
@@ -91,9 +95,10 @@ export class CodeModeController {
 	): Promise<AgentToolResult<unknown>> {
 		const executionOptions = parseExecutionOptions(code);
 		return this.runOperation(async (ownedSignal) => {
-			const session = await this.ensureSession();
-			this.startingCells++;
+			this.reserveCellStart();
+			let starting = true;
 			try {
+				const session = await this.ensureSession();
 				const tools = snapshotTools(this.options.createNestedTools(context));
 				preflightDefinitions(tools, this.limits.maxCellLimits.toolDefinitionBytes);
 				const runtime: CellRuntime = {
@@ -114,13 +119,16 @@ export class CodeModeController {
 					(cellId) => {
 						this.assertOpen();
 						if (this.cells.has(cellId)) throw new Error(`Duplicate code-mode cell ${cellId}`);
+						if (!starting) throw new Error("Code-mode cell start reservation was already consumed");
+						this.startingCells--;
+						starting = false;
 						this.cells.set(cellId, runtime);
 					},
 				);
 				if (response.kind !== "yielded") this.cells.delete(response.cellId);
 				return runtimeResult(response, executionOptions.maxOutputTokens, this.limits.maxCellLimits.outputBytes);
 			} finally {
-				this.startingCells--;
+				if (starting) this.startingCells--;
 			}
 		}, signal).catch((error: unknown) => {
 			throw boundedOuterError(
@@ -140,16 +148,27 @@ export class CodeModeController {
 		if (!this.cells.has(cellId)) {
 			return Promise.reject(new Error(`Unknown or expired code-mode cell ${boundedId(cellId, "cell ID")}`));
 		}
-		return this.runOperation(async (ownedSignal) => {
-			const session = await this.ensureSession();
-			const response = terminate
-				? await session.terminate(cellId, ownedSignal)
-				: await session.wait(cellId, yieldTimeMs, ownedSignal);
-			if (response.kind !== "yielded") this.cells.delete(cellId);
-			return runtimeResult(response, maxTokens, this.limits.maxCellLimits.outputBytes);
-		}, signal).catch((error: unknown) => {
-			throw boundedOuterError(error, outerErrorLimit(maxTokens, this.limits.maxCellLimits.outputBytes));
-		});
+		if (this.activeWaits.has(cellId)) {
+			return Promise.reject(new Error(`Code-mode cell ${boundedId(cellId, "cell ID")} already has an active wait`));
+		}
+		this.activeWaits.add(cellId);
+		try {
+			return this.runOperation(async (ownedSignal) => {
+				const session = await this.ensureSession();
+				const response = terminate
+					? await session.terminate(cellId, ownedSignal)
+					: await session.wait(cellId, yieldTimeMs, ownedSignal);
+				if (response.kind !== "yielded") this.cells.delete(cellId);
+				return runtimeResult(response, maxTokens, this.limits.maxCellLimits.outputBytes);
+			}, signal)
+				.catch((error: unknown) => {
+					throw boundedOuterError(error, outerErrorLimit(maxTokens, this.limits.maxCellLimits.outputBytes));
+				})
+				.finally(() => this.activeWaits.delete(cellId));
+		} catch (error) {
+			this.activeWaits.delete(cellId);
+			throw error;
+		}
 	}
 
 	close(): Promise<void> {
@@ -209,7 +228,7 @@ export class CodeModeController {
 		const session = new HostSession(generation, `pi-code-mode-${randomUUID()}`, this.limits);
 		try {
 			await session.open(
-				(request, signal) => this.handleDelegate(request, signal),
+				(request, signal) => this.trackDelegate(request, signal),
 				(cellId) => this.cells.delete(cellId),
 				() => this.generationLost(session),
 				this.controllerAbort.signal,
@@ -228,6 +247,8 @@ export class CodeModeController {
 	}
 
 	private async handleDelegate(request: Record<string, unknown>, hostSignal: AbortSignal): Promise<unknown> {
+		const signal = AbortSignal.any([hostSignal, this.controllerAbort.signal]);
+		throwIfAborted(signal);
 		if (request.type === "notification/send") {
 			const cellId = boundedId(request.cellId, "notification cell ID");
 			const callId = boundedId(request.callId, "notification call ID");
@@ -236,6 +257,7 @@ export class CodeModeController {
 			}
 			const runtime = this.cells.get(cellId);
 			if (!runtime) throw new Error(`Unknown code-mode cell ${cellId}`);
+			throwIfAborted(signal);
 			runtime.onUpdate?.({
 				content: [{ type: "text", text: request.text }],
 				details: { cellId, callId, notification: true },
@@ -257,11 +279,12 @@ export class CodeModeController {
 		}
 		const tool = runtime.tools.get(name);
 		if (!tool) throw new Error(`Unknown nested tool ${String(name)}`);
-		const signal = AbortSignal.any([hostSignal, this.controllerAbort.signal]);
 		const raw = invocation.input ?? {};
+		throwIfAborted(signal);
 		const prepared = tool.prepareArguments ? tool.prepareArguments(raw) : raw;
 		let args = validate(tool, prepared, runtimeCallId);
 		if (this.options.beforeNestedTool) {
+			throwIfAborted(signal);
 			const replacement = await this.options.beforeNestedTool({
 				toolName: name,
 				arguments: args,
@@ -274,6 +297,7 @@ export class CodeModeController {
 		throwIfAborted(signal);
 		const release = await this.scheduler.acquire(tool.executionMode === "sequential" ? "exclusive" : "shared", signal);
 		try {
+			throwIfAborted(signal);
 			let result = await tool.execute(
 				`${runtime.outerToolCallId}:code-mode:${cellId}:${runtimeCallId}`,
 				args as never,
@@ -283,6 +307,7 @@ export class CodeModeController {
 			);
 			result = validateToolResult(result);
 			if (this.options.afterNestedTool) {
+				throwIfAborted(signal);
 				const replacement = await this.options.afterNestedTool({
 					toolName: name,
 					arguments: args,
@@ -308,12 +333,30 @@ export class CodeModeController {
 		}
 	}
 
+	private trackDelegate(request: Record<string, unknown>, hostSignal: AbortSignal): Promise<unknown> {
+		if (this.lifecycle !== "open") {
+			return Promise.reject(new Error(`Code-mode controller is ${this.lifecycle}`));
+		}
+		const promise = this.handleDelegate(request, hostSignal);
+		this.delegates.add(promise);
+		void promise.then(
+			() => this.delegates.delete(promise),
+			() => this.delegates.delete(promise),
+		);
+		return promise;
+	}
+
 	private runOperation<T>(operation: (signal: AbortSignal) => Promise<T>, callerSignal?: AbortSignal): Promise<T> {
 		this.assertOpen();
 		const signal = callerSignal
 			? AbortSignal.any([callerSignal, this.controllerAbort.signal])
 			: this.controllerAbort.signal;
-		const promise = Promise.resolve().then(() => operation(signal));
+		let promise: Promise<T>;
+		try {
+			promise = operation(signal);
+		} catch (error) {
+			promise = Promise.reject(error);
+		}
 		this.operations.add(promise);
 		void promise.then(
 			() => this.operations.delete(promise),
@@ -327,17 +370,13 @@ export class CodeModeController {
 		this.lifecycle = "draining";
 		this.controllerAbort.abort(new Error("Code mode is disabling"));
 		const errors: unknown[] = [];
-		const settled = await withDeadline(
-			Promise.allSettled([...this.operations]),
-			CONTROLLER_OPERATION_DRAIN_MS,
-			"Code-mode operation drain timed out",
+		await withDeadline(
+			this.drainTrackedWork(errors),
+			CONTROLLER_DELEGATE_DRAIN_MS,
+			"Code-mode delegate drain timed out",
 		).catch((error: unknown) => {
 			errors.push(error);
-			return undefined;
 		});
-		if (settled) {
-			for (const result of settled) if (result.status === "rejected") errors.push(result.reason);
-		}
 		try {
 			await this.drainLossCleanups();
 		} catch (error) {
@@ -378,6 +417,7 @@ export class CodeModeController {
 			}
 		}
 		this.cells.clear();
+		this.activeWaits.clear();
 		try {
 			await this.drainLossCleanups();
 		} catch (error) {
@@ -390,6 +430,21 @@ export class CodeModeController {
 
 	private assertOpen(): void {
 		if (this.lifecycle !== "open") throw new Error(`Code-mode controller is ${this.lifecycle}`);
+	}
+
+	private reserveCellStart(): void {
+		this.assertOpen();
+		if (this.cells.size + this.startingCells >= this.limits.maxActiveCells) {
+			throw new Error(`Code-mode active cell limit ${this.limits.maxActiveCells} reached`);
+		}
+		this.startingCells++;
+	}
+
+	private async drainTrackedWork(errors: unknown[]): Promise<void> {
+		while (this.operations.size || this.delegates.size) {
+			const settled = await Promise.allSettled([...this.operations, ...this.delegates]);
+			for (const result of settled) if (result.status === "rejected") errors.push(result.reason);
+		}
 	}
 }
 

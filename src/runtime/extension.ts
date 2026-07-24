@@ -36,7 +36,7 @@ type ClaimState = "unclaimed" | "partial" | "claimed";
 type NativeOverlayTransaction = {
 	readonly providerId: string;
 	install(): void;
-	restore(): void;
+	restore(): Promise<void>;
 };
 
 export interface ExtensionEngine {
@@ -305,7 +305,7 @@ class ExtensionRuntime {
 				errors.push(restoreError);
 			}
 			try {
-				overlay.restore();
+				await overlay.restore();
 			} catch (restoreError) {
 				errors.push(restoreError);
 			}
@@ -352,7 +352,7 @@ class ExtensionRuntime {
 			}
 		}
 		try {
-			overlay?.restore();
+			await overlay?.restore();
 		} catch (error) {
 			errors.push(error);
 		}

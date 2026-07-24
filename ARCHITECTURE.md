@@ -213,6 +213,11 @@ outer call. Result is one of:
 
 `wait` accepts yielded cell ID and optional termination request. It observes until completion or
 next yield, or terminates that cell. It cannot access a cell from another session/host generation.
+Client admission reserves a cell slot before host preparation, nested-tool snapshotting, or frame
+construction. `cells + startingCells` never exceeds `maxActiveCells`; excess `exec` calls reject
+immediately without a queue. A reservation transfers to the cell map when host reports its cell ID
+and releases on every earlier failure. Only one `wait` or terminate operation may be active for a
+cell, while `wait` remains outside start admission.
 
 `request_user_input` accepts 1-3 questions, each with 2-3 bounded choices. Public Pi `select` adds
 `Other`, and public `input` collects its bounded free-form value. Optional 60-240 second
@@ -273,6 +278,10 @@ and maintains one output for each call ID.
 Cancellation sources are combined: Pi tool signal, explicit `wait` termination, mode disable,
 model/session change, configured deadline, host exit, and protocol failure. First cancellation
 closes admission, propagates to nested tools, and settles every pending promise exactly once.
+Every accepted delegate promise remains controller-owned until settlement. Shutdown aborts first,
+then drains outer operations and delegates under one `CONTROLLER_DELEGATE_DRAIN_MS` deadline before
+cell/session cleanup. A timeout is reported as cleanup failure; cancellation cannot stop arbitrary
+custom-tool side effects that ignore their `AbortSignal`.
 
 Each enable owns a monotonically unique host generation. Cells and messages carry generation and
 session IDs. Late output from an old generation is rejected. Crash handling:
@@ -319,6 +328,11 @@ registration through both getters. Restore is allowed only when all ownership ch
 - config getter is absent;
 - every current non-stream field matches expected structural/value snapshot.
 
+Each overlay transaction owns an abort controller used by every native request, combined with Pi's
+request signal. Restore aborts before provider ownership restoration and drains tracked relay tasks
+for at most `NATIVE_OVERLAY_DRAIN_MS`. A stalled relay reports bounded cleanup failure while
+provider restoration still follows ownership checks.
+
 For prior `config`, call `registerProvider(providerId, capturedConfig)` with exact captured config.
 For prior `none`, call `unregisterProvider(providerId)` and verify both getters are absent. Prior
 `native` never reaches commit. If any ownership or post-restore verification differs, another
@@ -343,9 +357,19 @@ Transport intentionally implements SSE only. Published WebSocket and zstd altern
 state, dependencies, and decompression risk without a code-mode correctness need. This deviation
 is reviewed and public. SSE parser accepts explicit standard SSE fields and a fixed Responses event
 allowlist. Unknown fields, event types, output types, reused indices, duplicate or oversized IDs,
-missing/wrong/duplicate call outputs, deltas after done, incomplete items, inconsistent completion
-bytes, wrong statuses, response ID changes, and events after terminal all fail. Hot deltas use
+missing/wrong/duplicate call outputs, deltas after done, inconsistent completion bytes, wrong
+statuses, response ID changes, and events after terminal all fail. Explicit incomplete
+tool calls and unsupported incomplete states fail; incomplete message and reasoning states follow
+the lifecycle matrix below. Hot deltas use
 bounded chunk arrays joined once at completion.
+
+Output-item lifecycle status is type-specific. Custom `exec` requires status absent on added and
+done. Function calls allow absent/`in_progress` on add and absent/`completed` on done; explicit
+incomplete functions reject. Messages require `in_progress` on add and allow
+`completed`/`incomplete` on done. Reasoning allows absent/`in_progress` on add and
+absent/`completed`/`incomplete` on done. Hosted web search retains required `in_progress` then
+`completed`. Function-arguments done repeats original function name. An explicitly incomplete item
+requires an incomplete terminal response.
 
 Streamed text and reasoning lifecycle is per content part, not per output item. Message
 `output_text` and `refusal` parts are keyed by `content_index`; reasoning summary parts by

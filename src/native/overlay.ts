@@ -9,7 +9,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ModelRegistry, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { NATIVE_MAX_PROVIDER_ERROR_BYTES } from "../constants.js";
+import { NATIVE_MAX_PROVIDER_ERROR_BYTES, NATIVE_OVERLAY_DRAIN_MS } from "../constants.js";
 import { nativeErrorText } from "./error-text.js";
 
 export type ProviderSnapshot =
@@ -22,7 +22,7 @@ export interface NativeOverlayTransaction {
 	readonly providerId: string;
 	readonly overlay: Provider;
 	install(): void;
-	restore(): void;
+	restore(): Promise<void>;
 }
 
 export function readProviderSnapshot(registry: ModelRegistry, providerId: string): ProviderSnapshot {
@@ -45,7 +45,17 @@ export function prepareNativeOverlay(
 		throw new Error(`Code-mode provider registration is inconsistent for ${providerId}`);
 	const effective = registry.getProvider(providerId);
 	if (!effective) throw new Error(`Code-mode provider ${providerId} is unavailable`);
-	const retainedStream = nativeStreamSimple;
+	const requestAbort = new AbortController();
+	const relayTasks = new Set<Promise<void>>();
+	const retainedStream = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+		const relay = createAssistantMessageEventStream();
+		const signal = options?.signal ? AbortSignal.any([options.signal, requestAbort.signal]) : requestAbort.signal;
+		const task = relayNativeStream(model, context, { ...options, signal }, relay).finally(() =>
+			relayTasks.delete(task),
+		);
+		relayTasks.add(task);
+		return relay;
+	};
 	const overlay = Object.create(Object.getPrototypeOf(effective)) as Provider;
 	for (const key of Reflect.ownKeys(effective)) {
 		const descriptor = Object.getOwnPropertyDescriptor(effective, key);
@@ -103,8 +113,19 @@ export function prepareNativeOverlay(
 			installed = true;
 			if (!ownsCurrent()) throw new Error(`Code-mode provider overlay verification failed for ${providerId}`);
 		},
-		restore() {
+		async restore() {
 			if (!installed) return;
+			requestAbort.abort(new Error("Code-mode provider overlay is restoring"));
+			let drainError: unknown;
+			try {
+				await withDeadline(
+					drainRelayTasks(relayTasks),
+					NATIVE_OVERLAY_DRAIN_MS,
+					"Code-mode native stream drain timed out",
+				);
+			} catch (error) {
+				drainError = error;
+			}
 			if (prior.kind === "config" && !matchesSnapshot(prior.value, expectedPriorConfig)) {
 				throw new Error(`Code-mode prior provider config collision for ${providerId}`);
 			}
@@ -118,6 +139,7 @@ export function prepareNativeOverlay(
 			} else if (restored.kind !== "config" || !matchesSnapshot(restored.value, expectedPriorConfig)) {
 				throw new Error(`Code-mode provider config restore failed for ${providerId}`);
 			}
+			if (drainError) throw drainError;
 		},
 	};
 }
@@ -139,24 +161,40 @@ function matchesDataDescriptor(
 	);
 }
 
-function nativeStreamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions) {
-	const relay = createAssistantMessageEventStream();
-	void import("./stream.js").then(
-		({ streamNativeCodeMode }) => relayEvents(streamNativeCodeMode(model, context, options), relay),
-		(error: unknown) => failRelay(relay, model, error),
-	);
-	return relay;
-}
-
-async function relayEvents(
-	source: AssistantMessageEventStream,
+async function relayNativeStream(
+	model: Model<Api>,
+	context: Context,
+	options: SimpleStreamOptions,
 	relay: ReturnType<typeof createAssistantMessageEventStream>,
 ): Promise<void> {
 	try {
+		options.signal?.throwIfAborted();
+		const { streamNativeCodeMode } = await import("./stream.js");
+		options.signal?.throwIfAborted();
+		const source: AssistantMessageEventStream = streamNativeCodeMode(model, context, options);
 		for await (const event of source) relay.push(event);
 		relay.end();
 	} catch (error) {
-		failRelay(relay, undefined, error);
+		failRelay(relay, model, error);
+	}
+}
+
+async function drainRelayTasks(tasks: ReadonlySet<Promise<void>>): Promise<void> {
+	while (tasks.size) await Promise.allSettled([...tasks]);
+}
+
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+				timer.unref?.();
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
 	}
 }
 
