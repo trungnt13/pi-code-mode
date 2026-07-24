@@ -1,7 +1,7 @@
 {
 	"name": "pi-code-mode",
 	"version": "0.1.0",
-	"description": "Bounded native-freeform and function-input JavaScript code mode for Pi",
+	"description": "Bounded CodeModeOnly JavaScript tool surface for supported Pi models",
 	"type": "module",
 	"license": "MIT",
 	"keywords": [

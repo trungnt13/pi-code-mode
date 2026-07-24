@@ -108,6 +108,18 @@ not module-resolution inputs.
 
 Transport behavior was cross-checked against published `@earendil-works/pi-ai` 0.81.1 distribution (`dist/api/openai-codex-responses.js` and `dist/openai-prompt-cache.js`): endpoint construction, OAuth account claim, required headers, session headers, SSE framing, timeout, retry, and callback behavior. Package implements this boundary directly with bounded platform `fetch`; it has no direct OpenAI SDK dependency. It deliberately excludes published WebSocket and zstd alternatives. Runtime imports only public Pi APIs.
 
+Provider-hosted web search request shape and bounded
+`web_search_call`/URL-citation event handling were cross-checked against OpenAI
+Responses streaming API schemas. This narrow compatibility path does not expose
+hosted search as a Pi tool and does not add an OpenAI SDK dependency.
+
+Tool-surface behavior follows Codex `CodeModeOnly`: nested-capable tools are
+hidden from direct model use, while provider-hosted web search remains a
+separate provider capability. Pi 0.81.1 has no public equivalent of Codex
+`DirectModelOnly` exposure or generic `request_user_input`, so this package
+implements that direct tool explicitly with public `select` and `input` dialogs.
+Its arguments and answer map follow upstream Codex protocol shapes.
+
 `src/native/transform-messages.ts` copies
 `packages/ai/src/api/transform-messages.ts` from `@earendil-works/pi-ai`
 0.81.1, adapting its type import to Pi's public package entry point and adding

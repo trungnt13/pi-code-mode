@@ -7,15 +7,19 @@ Package: `pi-code-mode`
 
 ## 1. Goal and acceptance boundary
 
-`pi-code-mode` is a standalone Pi extension. When enabled, model-visible tools are reduced to
-`exec` and `wait`. JavaScript cells can call a bounded set of nested Pi tools without writing
-those nested calls or results into Pi transcript.
+`pi-code-mode` is a standalone Pi extension. Its enabled tool policy implements Codex
+`CodeModeOnly`, not mixed `CodeMode`: Pi-callable model tools are reduced to `exec`, `wait`, and
+package-owned `request_user_input`.
+JavaScript cells can call a bounded set of nested Pi tools without writing those nested calls or
+results into Pi transcript. Native provider payload may additionally contain the separately
+bounded provider-hosted `web_search` tool; it never becomes a Pi tool call.
 
 Expected provider behavior:
 
-- Only models with API `openai-codex-responses`, provider `openai-codex`, and ID prefix `gpt-5.6` use native freeform `exec`.
-- Other providers use normal function input `{ code: string }`.
-- Unsupported providers reject any request that forces freeform before network work starts.
+- Only models with API `openai-codex-responses`, provider `openai-codex`, and ID prefix `gpt-5.6`
+  activate CodeModeOnly and native freeform `exec`.
+- Unsupported models keep exact normal Pi active tools and provider while enabled preference
+  remains set.
 
 Extension is off by default. Import and extension load register only `/code-mode`,
 `/code-mode-host-install`, and `/code-mode-status`. Disabled load must not register tools, replace
@@ -33,16 +37,18 @@ reported as such; it is not converted into a claim.
 Extension uses these public capabilities:
 
 - `registerCommand` for `/code-mode`, `/code-mode-host-install`, and `/code-mode-status`;
-- lazy `registerTool` for `exec` and `wait`;
+- lazy `registerTool` for `exec`, `wait`, and `request_user_input`;
 - `getAllTools`, `getActiveTools`, and `setActiveTools` for conflict detection and activation;
 - public coding-tool factories for default nested tools;
 - `registerProvider` and `unregisterProvider` for an owned provider overlay;
-- current model and `model_select` for provider selection and teardown;
+- current model and `model_select` for transactional activation or normal fallback;
 - `session_shutdown` for reload, session switch, and process-shutdown cleanup;
 - tool execution context for cancellation, current working directory, and UI reporting.
 
 Public Pi does not expose executable definitions for arbitrary active tools. It also does not let
-one extension replay another extension's private `tool_call` or `tool_result` handlers. Therefore:
+one extension replay another extension's private `tool_call` or `tool_result` handlers. Unlike
+Codex, Pi 0.81.1 also exposes no `DirectModelOnly` classification or generic
+`request_user_input` tool. Therefore this package explicitly owns a bounded implementation:
 
 - default nested tools are package-created `read`, `bash`, `edit`, `write`, `grep`, `find`, and
   `ls`;
@@ -50,6 +56,7 @@ one extension replay another extension's private `tool_call` or `tool_result` ha
   `createCodeModeExtension({ nestedTools })`;
 - nested definitions are copied into an immutable snapshot for each cell;
 - third-party registered tools are never discovered, claimed, or invoked by name;
+- public `select` and `input` dialogs implement the direct question tool without private APIs;
 - extension-owned optional before/after callbacks are the only nested hooks;
 - README and API docs must state this boundary.
 
@@ -62,7 +69,7 @@ provider boundary. No protected Pi freeform field is required.
 ```text
 Pi extension
   ├─ command/controller       enable, disable, status, lifecycle transaction
-  ├─ exec and wait tools      only model-visible tools while enabled
+  ├─ direct Pi tools          exec, wait, request_user_input while active
   ├─ nested-tool adapter      validation, callbacks, cancellation, result conversion
   ├─ fair scheduler           shared parallel batches, exclusive sequential batches
   ├─ cell manager             cell IDs, yield/resume/terminate, limits, cleanup
@@ -70,7 +77,7 @@ Pi extension
   ├─ host provisioner         path/hash/size/platform/architecture validation
   └─ provider bridge
        ├─ native overlay      exact OpenAI Codex Responses GPT-5.6 eligibility only
-       └─ function path       every other supported provider
+       └─ normal fallback     every unsupported model/provider
 
 local stdio protocol
   └─ operator-built package-owned codex-code-mode-host
@@ -122,49 +129,44 @@ Concurrent toggle/model/shutdown requests cannot observe or publish half-created
 load keeps facade off and unclaimed with bounded status error. Validation or enable failures after
 successful load follow normal transaction and claim rules below.
 
-Preflight, before any package-owned mutation:
+Unsupported enable stops before preflight: it records enabled preference but performs no host
+resolution, validation, name claim, active-tool change, or provider inspection. Supported
+preflight, before any package-owned mutation:
 
-1. Read `getAllTools()` and reject if `exec` or `wait` exists and package has not claimed it in
-   this extension instance.
+1. Read `getAllTools()` and reject if `exec`, `wait`, or `request_user_input` exists and package
+   has not claimed it in this extension instance.
 2. Snapshot ordered active tool names.
 3. Build immutable nested-tool registry from package defaults plus explicit definitions. Reject
-   duplicate names, `exec`, `wait`, malformed schemas, or definitions outside configured limits.
+   duplicate/reserved names, malformed schemas, or definitions outside configured limits.
 4. Resolve five host facts from factory options or explicit environment variables and validate
    local file metadata as defined in section 9. No process starts.
-5. Inspect current model/provider. For an eligible native provider, read both public registry
+5. Inspect current supported model/provider and read both public registry
    getters, `getRegisteredProviderConfig(providerId)` and
    `getRegisteredNativeProvider(providerId)`, and create the discriminated snapshot defined in
    section 8. A prior native registration is rejected before mutation. For an allowed
-   `none`/`config` snapshot, compute the package-owned native overlay. For function path, prepare
-   no overlay.
+   `none`/`config` snapshot, compute the package-owned native overlay.
 
 Commit:
 
 1. On first enable in this extension instance, lazily register retained package tool definitions.
    Each retained definition and parameter schema carries a per-instance package marker. Reread
-   `getAllTools()` and require `exec` and `wait` to resolve to package source metadata and their
+   `getAllTools()` and require all three direct tools to resolve to package source metadata and
    exact retained schema markers. They remain package-owned until reload because Pi cannot
    unregister tools.
-2. Install native provider overlay when eligible.
-3. Call `setActiveTools(["exec", "wait"])`, then require `getActiveTools()` to equal exactly
-   `["exec", "wait"]` in that order.
-4. Publish enabled state only after every verification succeeds.
+2. Install native provider overlay.
+3. Call `setActiveTools(["exec", "wait", "request_user_input"])`, then require the exact ordered
+   result.
+4. Publish active state only after every verification succeeds.
 
 Any commit failure closes cells/host generation if created, restores still-available prior active
 tools in original order, and performs guarded provider restoration. Mode remains disabled. If
-tool registration occurred, status reports `exec`/`wait` as claimed until reload even when marker
+tool registration occurred, status reports direct names as claimed until reload even when marker
 or active-set verification failed. Tool names already registered cannot be released before reload.
 Preflight is arranged so all expected failures occur before lazy name claim.
 
 ### 4.3 Model request
 
-Enabled function path:
-
-```text
-model -> function call exec({ code }) -> Pi exec tool -> cell manager
-```
-
-Enabled native path:
+Active native path:
 
 ```text
 model -> OpenAI custom exec raw input
@@ -179,10 +181,10 @@ explicitly.
 
 ### 4.4 Disable and lifecycle teardown
 
-A disabling `/code-mode` toggle, `model_select`, `session_shutdown` for
-reload/new/resume/fork/quit, and package shutdown all use one idempotent teardown:
+A disabling `/code-mode` toggle, supported-to-unsupported `model_select`,
+`session_shutdown`, and package shutdown all use one idempotent active teardown:
 
-1. Stop accepting new `exec`, `wait`, and nested calls.
+1. Stop accepting new `exec`, `wait`, `request_user_input`, and nested calls.
 2. Abort active cells and reject pending waiters with a specific disabled/cancelled result.
 3. Request bounded session shutdown, then terminate owned host generation if needed.
 4. Restore ordered prior active tool names, filtered only for names no longer present in
@@ -190,17 +192,19 @@ reload/new/resume/fork/quit, and package shutdown all use one idempotent teardow
 5. Restore provider through ownership check in section 8.
 6. Clear per-enable snapshots and report collision state.
 
-Model change always disables mode; user must enable again for new model. Teardown never carries a
-cell or nested-tool snapshot across model or session boundaries.
+Model change preserves enabled preference. Supported-to-unsupported restores normal tools and
+provider; unsupported-to-supported snapshots current normal tools and activates automatically.
+No cell or nested-tool snapshot crosses an active/fallback boundary.
 
-After first enable, registered `exec` and `wait` remain in `getAllTools()` but inactive while mode
-is off. A foreign extension cannot acquire those names until reload. Before first enable, this
-package owns neither name. This is a Pi API limitation and must be visible in status/docs.
+After first supported activation, registered direct names remain in `getAllTools()` but inactive
+while off or in normal fallback. A foreign extension cannot acquire those names until reload.
+Before first supported activation, this package owns none. Status distinguishes off, enabled
+normal fallback, and enabled active.
 
 ## 5. Cell and tool flow
 
-`exec` accepts JavaScript source. Native path supplies raw source; function path validates exactly
-one `code` string. It starts a bounded cell or resumes the protocol operation associated with that
+`exec` accepts JavaScript source. Provider bridge supplies raw source and Pi tool boundary
+validates exactly one `code` string. It starts a bounded cell or resumes the protocol operation associated with that
 outer call. Result is one of:
 
 - completed output;
@@ -209,6 +213,12 @@ outer call. Result is one of:
 
 `wait` accepts yielded cell ID and optional termination request. It observes until completion or
 next yield, or terminates that cell. It cannot access a cell from another session/host generation.
+
+`request_user_input` accepts 1-3 questions, each with 2-3 bounded choices. Public Pi `select` adds
+`Other`, and public `input` collects its bounded free-form value. Optional 60-240 second
+`autoResolutionMs` applies one shared deadline. Abort propagates through both dialogs. Result text
+is the upstream-compatible `{ "answers": { "<id>": { "answers": [...] } } }` JSON shape; an
+unanswered timeout or dialog dismissal leaves bounded empty answer arrays.
 
 Inside JavaScript, `tools.<name>(input)` sends a nested request over local protocol:
 
@@ -245,8 +255,8 @@ release.
 Pi transcript contains only outer model interactions:
 
 ```text
-assistant tool call: exec or wait
-tool result:          exec or wait result
+assistant tool call: exec, wait, or request_user_input
+tool result:          matching direct tool result
 ```
 
 Nested call arguments, progress, and results travel only between cell manager, adapter, and local
@@ -282,7 +292,9 @@ are removed on every terminal path. There are no permanent process exit hooks.
 ## 8. Provider bridge and transactional ownership
 
 Native overlay is adapted from `@howaboua/pi-codex-conversion` but is package-owned. It applies
-only when current model API is exactly `openai-codex-responses`, provider is exactly `openai-codex`, and model ID starts with `gpt-5.6`. Every other provider remains untouched and uses function input.
+only when current model API is exactly `openai-codex-responses`, provider is exactly
+`openai-codex`, and model ID starts with `gpt-5.6`. Every unsupported model/provider remains
+untouched with its normal Pi tool surface.
 
 Before overlay:
 
@@ -314,8 +326,8 @@ actor changed provider. Package leaves current provider untouched, disables cell
 surface, records collision, and reports it. It never unregisters or overwrites foreign provider
 state to force cleanup.
 
-Provider overlay is absent while off. Unsupported forced-freeform selection fails locally before
-provider request construction or network access.
+Provider overlay is absent while off or in unsupported normal fallback. Unsupported transitions
+do not enter package provider request construction or network access.
 
 Native request transport matches published Pi 0.81.1 Codex SSE contract. It normalizes provider
 base URL to `/codex/responses`, defaulting to `https://chatgpt.com/backend-api`; requires bearer
@@ -376,10 +388,20 @@ paths use Pi placeholders.
 Pi stores provider tool identity as `callId|itemId`; `|` is therefore reserved and rejected in
 either provider wire ID, and replay rejects any stored identity with more than one delimiter
 instead of truncating it. Native payload validation requires exactly one custom `exec` grammar,
-one function `wait`, no other tool surface, and replayed exec arguments containing exactly
-`code`. Each tool output must occur after its matching call in transcript order; parallel calls
-may be followed by their outputs in any order. Provider output accepts custom calls only for
-`exec` and function calls only for `wait`.
+one function `wait`, and one function `request_user_input` as Pi-callable tools. A post-build
+payload hook may add at most one exact
+provider-hosted `web_search` entry with boolean `external_web_access`; duplicates, extra fields,
+names, and every other hosted tool fail. Replayed exec arguments contain exactly `code`. Each
+tool output must occur after its matching call in transcript order; parallel calls may be
+followed by their outputs in any order. Provider output accepts custom calls only for `exec` and
+function calls only for `wait` and `request_user_input`.
+
+Hosted `web_search_call` items consume the same output-index and item-ID budgets but never create
+Pi tool calls or pending results. Optional progress events must advance without duplicates or
+regression, and item completion is mandatory before terminal response. URL-citation annotation
+events must target a live matching `output_text` part and use contiguous annotation indexes.
+Their exact URL citation shape is validated, then omitted because Pi text content has no
+annotation field. Other hosted items, annotations, and events remain unsupported.
 
 During streaming, Pi delta events carry exact new bytes, while mutable partial message blocks may
 remain stale until matching done/item completion. This is deliberate: rebuilding accumulated
@@ -703,13 +725,13 @@ candidate.
 
 | Failure | Required behavior |
 |---|---|
-| `exec`/`wait` conflict before first enable | reject without registration or removal |
+| direct tool conflict before first supported activation | reject without registration or removal |
 | enable while agent busy | reject; no partial mutation |
 | incomplete/invalid host facts | reject before tool/provider mutation |
 | host hash/size/platform/arch mismatch | reject before spawn |
 | provider has incompatible custom stream | reject native enable; leave provider unchanged |
 | provider changed while overlay active | leave foreign state untouched, disable, report collision |
-| unsupported forced freeform | reject before network |
+| unsupported enable/model | keep normal tools/provider; skip host resolution |
 | malformed/duplicate provider call IDs | explicit stream failure; no corrupt replay |
 | invalid nested input/output | bounded explicit outer error |
 | cell/tool limit | cancel affected work and report exact limit |
@@ -722,10 +744,14 @@ Accepted trade-offs:
 
 - Public Pi cannot expose arbitrary third-party tools or private hooks; explicit definitions are
   safer but less transparent.
+- Public Pi has no Codex-style direct-only exposure metadata. The extension cannot automatically
+  preserve future direct-only exceptions; each needs an explicit public Pi contract and reviewed
+  integration.
 - Native OpenAI support duplicates a small provider boundary and creates upstream sync work.
-- Native stream supports Responses message, reasoning, function-call, and custom-call items needed
-  by Pi code mode. New server-native output item kinds require explicit reviewed support.
-- Pi cannot unregister lazy tool names, so first enable reserves them until reload.
+- Native stream supports Responses message, reasoning, function-call, custom-call, and narrowly
+  bounded hosted web-search items needed by Pi code mode. New server-native output item kinds
+  require explicit reviewed support.
+- Pi cannot unregister lazy tool names, so first supported activation reserves them until reload.
 - Restoring saved active list intentionally discards tool-surface changes attempted while package
   exclusively owned enabled surface.
 - Local package-owned host setup costs Cargo/rustc, registry/V8 artifacts, build time, and
@@ -756,8 +782,8 @@ files outside package source and must be reproducible.
 - Disabled import records zero tool registration, provider overlay, spawn, filesystem, network,
   timer, and exit-hook events; it registers exactly three commands listed in section 1.
 - First and repeated toggle cycles restore exact active-tool order.
-- Tool-name fixtures cover allowed state (both names absent, then both package source/schema
-  markers resolve and exact active list is `["exec", "wait"]`) and excluded state (either name
+- Tool-name fixtures cover allowed state (all names absent, then all package source/schema
+  markers resolve and exact active list is `["exec", "wait", "request_user_input"]`) and excluded state (any name
   already resolves to a foreign definition). Excluded definitions are neither registered over nor
   removed. Marker/active-list verification failure restores prior state, remains disabled, and
   reports names claimed until reload.
@@ -782,15 +808,14 @@ files outside package source and must be reproducible.
 - Host fixture replaces source path after its handle opens and proves spawned bytes come only from
   validated private copy; private file is `0700`, source path is never spawned, and temporary
   artifacts are removed after success and every failure.
-- Transcript fixture contains only outer `exec`/`wait` calls and results.
+- Transcript fixture contains only outer `exec`/`wait`/`request_user_input` calls and results.
 
 ### 13.3 Provider fixtures
 
 - Native request, streamed raw-code deltas, completed call, replay, and custom output pairing
   preserve exact JavaScript.
-- Function fallback emits and accepts exactly `{ code: string }`.
-- Duplicate IDs, cancellation, malformed stream termination, and unsupported forced freeform fail
-  before corrupt state or network work.
+- Duplicate IDs, cancellation, malformed stream termination, and unsupported native functions
+  fail before corrupt state or network work.
 
 ### 13.4 Provenance and protected cleanup
 

@@ -51,6 +51,7 @@ type StreamPart<F extends string> = {
 	added: boolean;
 	partDone: boolean;
 	active: boolean;
+	annotations: number;
 };
 
 class BoundedChunks {
@@ -125,6 +126,12 @@ type NativeState =
 			summaryParts: Map<number, StreamPart<ThinkingPartFamily>>;
 			contentParts: Map<number, StreamPart<ThinkingPartFamily>>;
 			order: Array<{ family: ThinkingPartFamily; index: number }>;
+	  }
+	| {
+			kind: "web_search";
+			index: number;
+			itemId: string;
+			progress: 0 | 1 | 2 | 3;
 	  };
 
 export function streamNativeCodeMode(model: Model<Api>, context: Context, options?: SimpleStreamOptions) {
@@ -461,7 +468,9 @@ export async function processNativeEvents(
 				const callId = uniqueWireId(item.call_id, "function call", callIds, budget);
 				rejectToolIdDelimiter(callId, "function call");
 				const name = boundedId(item.name, "function name");
-				if (name !== "wait") throw new Error(`Native function tool must be wait, received ${name}`);
+				if (name !== "wait" && name !== "request_user_input") {
+					throw new Error(`Native function tool must be wait or request_user_input, received ${name}`);
+				}
 				const initial = optionalString(item.arguments, "function arguments") ?? "";
 				const chunks = new BoundedChunks();
 				chunks.append(initial, budget);
@@ -508,7 +517,27 @@ export async function processNativeEvents(
 					order: [],
 				});
 				stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+			} else if (itemType === "web_search_call") {
+				validateWebSearchItem(item, "in_progress");
+				states.set(outputIndex, {
+					kind: "web_search",
+					index: outputIndex,
+					itemId,
+					progress: 0,
+				});
 			} else throw new Error(`Unsupported native output item type ${itemType}`);
+			continue;
+		}
+		if (
+			type === "response.web_search_call.in_progress" ||
+			type === "response.web_search_call.searching" ||
+			type === "response.web_search_call.completed"
+		) {
+			const state = requireState(states, event.output_index, "web_search");
+			matchItemId(event, state.itemId, "hosted web search progress");
+			const progress = type.endsWith(".in_progress") ? 1 : type.endsWith(".searching") ? 2 : 3;
+			if (progress <= state.progress) throw new Error("Duplicate or regressive hosted web search progress");
+			state.progress = progress as 1 | 2 | 3;
 			continue;
 		}
 		if (type === "response.custom_tool_call_input.delta") {
@@ -605,6 +634,19 @@ export async function processNativeEvents(
 			part.active = true;
 			continue;
 		}
+		if (type === "response.output_text.annotation.added") {
+			const state = requireState(states, event.output_index, "text");
+			matchItemId(event, state.itemId, "output text annotation");
+			const contentIndex = requireIndex(event.content_index);
+			const part = state.parts.get(contentIndex);
+			if (!part || part.family !== "output_text" || (!part.added && !part.active) || part.partDone)
+				throw new Error("Output text annotation targets no live output_text part");
+			const annotationIndex = requireIndex(event.annotation_index);
+			if (annotationIndex !== part.annotations) throw new Error("Output text annotation index skipped or reused");
+			validateUrlCitation(event.annotation, part.chunks.finish().length);
+			part.annotations++;
+			continue;
+		}
 		if (type === "response.reasoning_summary_text.done" || type === "response.reasoning_text.done") {
 			const state = requireState(states, event.output_index, "thinking");
 			const family = type === "response.reasoning_summary_text.done" ? "reasoning_summary_text" : "reasoning_text";
@@ -641,6 +683,9 @@ export async function processNativeEvents(
 			if (!part) throw new Error("Native content part family does not match output item");
 			if (type === "response.content_part.added") {
 				if (part.added || part.active) throw new Error("Duplicate or late native content part added");
+				if (family === "output_text") validateTextAnnotations(partValue, 0);
+				else if (Object.hasOwn(partValue, "annotations"))
+					throw new Error("Refusal content must not contain annotations");
 				part.added = true;
 				if (text) {
 					part.chunks.append(text, budget);
@@ -654,6 +699,9 @@ export async function processNativeEvents(
 			} else {
 				if (part.partDone) throw new Error("Duplicate native content part done");
 				if (text !== part.chunks.finish()) throw new Error("Native content part done payload mismatch");
+				if (family === "output_text") validateTextAnnotations(partValue, part.annotations);
+				else if (Object.hasOwn(partValue, "annotations"))
+					throw new Error("Refusal content must not contain annotations");
 				part.partDone = true;
 				part.active = true;
 			}
@@ -743,7 +791,7 @@ export async function processNativeEvents(
 			} else if (state.kind === "text") {
 				if (item.type !== "message" || item.id !== state.itemId || item.status !== "completed")
 					throw new Error("Text completion identity or status mismatch");
-				const text = completedText(item);
+				const text = completedText(item, state);
 				const streamed = finishTextParts(state);
 				if (streamed && text !== streamed) throw new Error("Text completion differs from streamed text");
 				state.block.text = text || streamed;
@@ -753,7 +801,7 @@ export async function processNativeEvents(
 					...(validTextPhase(item.phase) ? { phase: item.phase } : {}),
 				});
 				stream.push({ type: "text_end", contentIndex: state.index, content: state.block.text, partial: output });
-			} else {
+			} else if (state.kind === "thinking") {
 				if (item.type !== "reasoning" || item.id !== state.itemId)
 					throw new Error("Reasoning completion identity mismatch");
 				const thinking = completedReasoning(item);
@@ -772,6 +820,10 @@ export async function processNativeEvents(
 					content: state.block.thinking,
 					partial: output,
 				});
+			} else {
+				if (item.type !== "web_search_call" || item.id !== state.itemId || item.status !== "completed")
+					throw new Error("Hosted web search completion identity mismatch");
+				validateWebSearchItem(item, "completed");
 			}
 			states.delete(outputIndex);
 			continue;
@@ -958,6 +1010,10 @@ function requireIndex(value: unknown): number {
 		throw new Error("Invalid native output index");
 	return value as number;
 }
+function requireNonnegativeInteger(value: unknown, label: string): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error(`Invalid ${label}`);
+	return value as number;
+}
 function boundedInteger(value: number, min: number, max: number, label: string): number {
 	if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`Invalid ${label}`);
 	return value;
@@ -1033,7 +1089,15 @@ function ensureTextPart(
 		return existing;
 	}
 	if (index !== state.parts.size) throw new Error("Native text content index skipped or reopened");
-	const part = { family, chunks: new BoundedChunks(), valueDone: false, added: false, partDone: false, active: false };
+	const part = {
+		family,
+		chunks: new BoundedChunks(),
+		valueDone: false,
+		added: false,
+		partDone: false,
+		active: false,
+		annotations: 0,
+	};
 	state.parts.set(index, part);
 	state.order.push(index);
 	return part;
@@ -1051,7 +1115,15 @@ function ensureThinkingPart(
 		return { part: existing };
 	}
 	if (index !== parts.size) throw new Error("Native reasoning part index skipped or reopened");
-	const part = { family, chunks: new BoundedChunks(), valueDone: false, added: false, partDone: false, active: false };
+	const part = {
+		family,
+		chunks: new BoundedChunks(),
+		valueDone: false,
+		added: false,
+		partDone: false,
+		active: false,
+		annotations: 0,
+	};
 	parts.set(index, part);
 	state.order.push({ family, index });
 	if (index > 0) {
@@ -1067,13 +1139,19 @@ function finishThinkingParts(state: Extract<NativeState, { kind: "thinking" }>):
 	const parts = state.summaryParts.size ? state.summaryParts : state.contentParts;
 	return [...parts.values()].map((part) => part.chunks.finish()).join("\n\n");
 }
-function completedText(item: Json): string {
+function completedText(item: Json, state: Extract<NativeState, { kind: "text" }>): string {
 	if (!Array.isArray(item.content)) throw new Error("Completed message content must be an array");
 	const chunks: string[] = [];
 	let bytes = 0;
-	for (const part of item.content) {
+	for (let index = 0; index < item.content.length; index++) {
+		const part = item.content[index];
 		if (!isRecord(part) || (part.type !== "output_text" && part.type !== "refusal"))
 			throw new Error("Unsupported completed message content part");
+		const streamedPart = state.parts.get(index);
+		if (state.parts.size && (!streamedPart || streamedPart.family !== part.type))
+			throw new Error("Completed message content differs from streamed parts");
+		if (part.type === "output_text") validateTextAnnotations(part, streamedPart?.annotations ?? 0);
+		else if (Object.hasOwn(part, "annotations")) throw new Error("Refusal content must not contain annotations");
 		const text =
 			part.type === "refusal"
 				? requireStringAllowEmpty(part.refusal, "refusal")
@@ -1083,6 +1161,85 @@ function completedText(item: Json): string {
 		chunks.push(text);
 	}
 	return chunks.join("");
+}
+
+function validateTextAnnotations(part: Json, expected: number): void {
+	if (part.annotations === undefined && expected === 0) return;
+	if (!Array.isArray(part.annotations)) throw new Error("Output text annotations must be an array");
+	if (part.annotations.length !== expected) throw new Error("Output text annotations differ from streamed annotations");
+	const text = requireStringAllowEmpty(part.text, "annotated output text");
+	for (const annotation of part.annotations) validateUrlCitation(annotation, text.length);
+}
+
+function validateUrlCitation(value: unknown, textLength: number): void {
+	const annotation = asRecord(value, "URL citation");
+	const allowed = new Set(["type", "url", "title", "start_index", "end_index"]);
+	if (Object.keys(annotation).some((key) => !allowed.has(key)) || Object.keys(annotation).length !== allowed.size)
+		throw new Error("URL citation must contain exact supported fields");
+	if (annotation.type !== "url_citation") throw new Error("Unsupported output text annotation");
+	const url = requireString(annotation.url, "URL citation URL");
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error("Invalid URL citation URL");
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("Invalid URL citation protocol");
+	requireStringAllowEmpty(annotation.title, "URL citation title");
+	const start = requireNonnegativeInteger(annotation.start_index, "URL citation start index");
+	const end = requireNonnegativeInteger(annotation.end_index, "URL citation end index");
+	if (end < start) throw new Error("URL citation range is reversed");
+	if (end > textLength) throw new Error("URL citation range exceeds output text");
+}
+
+function validateWebSearchItem(item: Json, status: "in_progress" | "completed"): void {
+	const allowed = new Set(["id", "type", "status", "action"]);
+	const keys = Object.keys(item);
+	if (keys.some((key) => !allowed.has(key)) || keys.length < 3 || keys.length > 4)
+		throw new Error("Hosted web search item contains unsupported fields");
+	if (item.type !== "web_search_call" || item.status !== status)
+		throw new Error("Hosted web search item type or status mismatch");
+	if (keys.length === 3) {
+		if (status === "completed" || Object.hasOwn(item, "action"))
+			throw new Error("Completed hosted web search item requires an action");
+		return;
+	}
+	if (!Object.hasOwn(item, "action")) throw new Error("Hosted web search item field mismatch");
+	const action = asRecord(item.action, "hosted web search action");
+	if (action.type === "search") {
+		const keys = new Set(["type", "query", "queries", "sources"]);
+		if (Object.keys(action).some((key) => !keys.has(key)))
+			throw new Error("Hosted web search action has unsupported fields");
+		if (!Object.hasOwn(action, "query")) throw new Error("Hosted web search action requires a query");
+		requireString(action.query, "hosted web search query");
+		if (action.queries !== undefined) {
+			if (!Array.isArray(action.queries)) throw new Error("Hosted web search queries must be an array");
+			for (const query of action.queries) requireString(query, "hosted web search query");
+		}
+		if (action.sources !== undefined) {
+			if (!Array.isArray(action.sources)) throw new Error("Hosted web search sources must be an array");
+			for (const value of action.sources) {
+				const source = asRecord(value, "hosted web search source");
+				if (Object.keys(source).length !== 2 || source.type !== "url" || typeof source.url !== "string" || !source.url)
+					throw new Error("Invalid hosted web search source");
+			}
+		}
+		return;
+	}
+	if (action.type === "open_page") {
+		if (Object.keys(action).some((key) => key !== "type" && key !== "url"))
+			throw new Error("Hosted open-page action has unsupported fields");
+		if (action.url !== undefined && action.url !== null) requireString(action.url, "hosted open-page URL");
+		return;
+	}
+	if (action.type === "find_in_page") {
+		if (Object.keys(action).length !== 3 || !Object.hasOwn(action, "url") || !Object.hasOwn(action, "pattern"))
+			throw new Error("Hosted find-in-page action must contain exact fields");
+		requireString(action.url, "hosted find-in-page URL");
+		requireString(action.pattern, "hosted find-in-page pattern");
+		return;
+	}
+	throw new Error("Unsupported hosted web search action");
 }
 function completedReasoning(item: Json): string {
 	const source =

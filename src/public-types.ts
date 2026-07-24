@@ -21,8 +21,6 @@ export type NestedAfterCallback = (input: {
 	signal: AbortSignal;
 }) => Promise<AgentToolResult<unknown> | undefined> | AgentToolResult<unknown> | undefined;
 
-export type CodeModeInputMode = "auto" | "function" | "freeform";
-
 export interface LocalHostIdentity {
 	executablePath: string;
 	sha256: string;
@@ -33,7 +31,6 @@ export interface LocalHostIdentity {
 
 export interface CodeModeExtensionOptions {
 	host?: LocalHostIdentity;
-	inputMode?: CodeModeInputMode;
 	nestedTools?: readonly AnyToolDefinition[];
 	beforeNestedTool?: NestedBeforeCallback;
 	afterNestedTool?: NestedAfterCallback;

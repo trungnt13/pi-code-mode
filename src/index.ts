@@ -1,4 +1,9 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
 import type { CodeModeExtensionOptions } from "./public-types.js";
 
 export type { CellLimits, JsonStructureLimits, SessionLimits } from "./constants.js";
@@ -32,7 +37,6 @@ export {
 export type {
 	AnyToolDefinition,
 	CodeModeExtensionOptions,
-	CodeModeInputMode,
 	LocalHostIdentity,
 	NestedAfterCallback,
 	NestedBeforeCallback,
@@ -44,6 +48,7 @@ export function createCodeModeExtension(options: CodeModeExtensionOptions = {}):
 
 interface ExtensionEngine {
 	enable(context: ExtensionCommandContext): Promise<void>;
+	modelChanged(context: ExtensionContext): Promise<void>;
 	disable(): Promise<void>;
 	isEnabled(): boolean;
 	statusText(): string;
@@ -112,8 +117,17 @@ class LazyExtensionRuntime {
 				context.ui.notify(this.statusText(), "info");
 			},
 		});
-		this.pi.on("model_select", async () => {
-			await this.mutex.run(async () => this.engine?.disable());
+		this.pi.on("model_select", async (_event, context) => {
+			await this.mutex.run(async () => {
+				if (!this.engine?.isEnabled()) return;
+				try {
+					this.lastError = undefined;
+					await this.engine.modelChanged(context);
+				} catch (error) {
+					this.lastError = boundedError(error);
+					context.ui.notify(`Code-mode model transition failed: ${this.lastError}`, "error");
+				}
+			});
 		});
 		this.pi.on("session_shutdown", async () => {
 			this.installAbort?.abort(new Error("Code-mode host install cancelled by session shutdown"));
@@ -139,7 +153,7 @@ class LazyExtensionRuntime {
 	private statusText(): string {
 		const base = this.engine
 			? [this.engine.statusText()]
-			: ["code-mode: off", "tools: unclaimed", "provider: function input (no overlay)"];
+			: ["code-mode: off", "tools: unclaimed", "provider: normal (no overlay)"];
 		return [
 			...base,
 			...(this.installAbort ? ["host install: running"] : []),

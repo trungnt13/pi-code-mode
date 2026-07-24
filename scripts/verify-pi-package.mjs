@@ -203,11 +203,24 @@ function assertRpcLoad() {
 	) {
 		fail("/code-mode-status did not report expected inactive state");
 	}
-	const enableError = events.find(
-		(event) => event.type === "extension_error" && event.extensionPath === "command:code-mode",
-	);
-	if (enableError?.error !== "Code-mode host is not configured") {
-		fail(`/code-mode toggle did not reach host validation: ${JSON.stringify(enableError)}`);
+	if (!events.some((event) => event.id === "toggle" && event.success === true)) {
+		fail("/code-mode toggle did not enter unsupported-model fallback");
+	}
+	if (
+		!events.some(
+			(event) =>
+				event.type === "extension_ui_request" &&
+				event.method === "notify" &&
+				typeof event.message === "string" &&
+				event.message.includes("code-mode: enabled, normal fallback") &&
+				event.message.includes("tools: unclaimed") &&
+				event.message.includes("provider: normal (no overlay)"),
+		)
+	) {
+		fail("/code-mode toggle did not report untouched unsupported-model fallback");
+	}
+	if (events.some((event) => String(event.error ?? "").includes("Code-mode host"))) {
+		fail("/code-mode unsupported-model fallback unexpectedly resolved or validated host");
 	}
 	if (events.some((event) => String(event.error ?? "").includes("runtime load failed"))) {
 		fail("Lazy TypeScript runtime import failed");

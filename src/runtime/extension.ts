@@ -13,7 +13,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
-import type { CodeModeExtensionOptions, CodeModeInputMode, LocalHostIdentity } from "../public-types.js";
+import type { CodeModeExtensionOptions, LocalHostIdentity } from "../public-types.js";
 import {
 	type AnyToolDefinition,
 	CodeModeController,
@@ -27,7 +27,11 @@ import { mergeSessionLimits } from "./protocol.js";
 const OWNER_MARKER = Symbol("pi-code-mode-owner");
 const EXEC = "exec";
 const WAIT = "wait";
+const REQUEST_USER_INPUT = "request_user_input";
 const DEFAULT_TOKENS = 10_000;
+const MIN_AUTO_RESOLUTION_MS = 60_000;
+const MAX_AUTO_RESOLUTION_MS = 240_000;
+const MAX_OTHER_ANSWER_LENGTH = 4_096;
 type ClaimState = "unclaimed" | "partial" | "claimed";
 type NativeOverlayTransaction = {
 	readonly providerId: string;
@@ -37,6 +41,7 @@ type NativeOverlayTransaction = {
 
 export interface ExtensionEngine {
 	enable(context: ExtensionCommandContext): Promise<void>;
+	modelChanged(context: ExtensionContext): Promise<void>;
 	disable(): Promise<void>;
 	isEnabled(): boolean;
 	statusText(): string;
@@ -64,7 +69,59 @@ export function createExtensionRuntime(pi: ExtensionAPI, options: CodeModeExtens
 		),
 		marker,
 	);
-	return new ExtensionRuntime(pi, options, explicitTools, marker, execSchema, waitSchema);
+	const requestUserInputSchema = markSchema(
+		Type.Object(
+			{
+				questions: Type.Array(
+					Type.Object(
+						{
+							id: Type.String({
+								pattern: "^[a-z][a-z0-9_]{0,63}$",
+								description: "Stable snake_case identifier for mapping answers.",
+							}),
+							header: Type.String({
+								minLength: 1,
+								maxLength: 12,
+								description: "Short header label, at most 12 characters.",
+							}),
+							question: Type.String({
+								minLength: 1,
+								maxLength: 1_024,
+								description: "Single-sentence prompt shown to the user.",
+							}),
+							options: Type.Array(
+								Type.Object(
+									{
+										label: Type.String({ minLength: 1, maxLength: 80 }),
+										description: Type.String({ minLength: 1, maxLength: 512 }),
+									},
+									{ additionalProperties: false },
+								),
+								{
+									minItems: 2,
+									maxItems: 3,
+									description:
+										'Mutually exclusive choices. Put the recommended option first and suffix its label with "(Recommended)". Do not include Other; the client adds it.',
+								},
+							),
+						},
+						{ additionalProperties: false },
+					),
+					{ minItems: 1, maxItems: 3, description: "Questions to show. Prefer one and do not exceed three." },
+				),
+				autoResolutionMs: Type.Optional(
+					Type.Integer({
+						minimum: MIN_AUTO_RESOLUTION_MS,
+						maximum: MAX_AUTO_RESOLUTION_MS,
+						description: "Optional non-blocking auto-resolution window. Omit when explicit user input is required.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		marker,
+	);
+	return new ExtensionRuntime(pi, options, explicitTools, marker, execSchema, waitSchema, requestUserInputSchema);
 }
 
 class ExtensionRuntime {
@@ -74,10 +131,13 @@ class ExtensionRuntime {
 	private readonly marker: object;
 	private readonly execSchema: TSchema;
 	private readonly waitSchema: TSchema;
+	private readonly requestUserInputSchema: TSchema;
 	private readonly execTool: AnyToolDefinition;
 	private readonly waitTool: AnyToolDefinition;
+	private readonly requestUserInputTool: AnyToolDefinition;
 	private claimState: ClaimState = "unclaimed";
 	private enabled = false;
+	private active = false;
 	private priorActive?: string[];
 	private controller?: CodeModeController;
 	private providerOverlay?: NativeOverlayTransaction;
@@ -90,6 +150,7 @@ class ExtensionRuntime {
 		marker: object,
 		execSchema: TSchema,
 		waitSchema: TSchema,
+		requestUserInputSchema: TSchema,
 	) {
 		this.pi = pi;
 		this.options = options;
@@ -97,6 +158,7 @@ class ExtensionRuntime {
 		this.marker = marker;
 		this.execSchema = execSchema;
 		this.waitSchema = waitSchema;
+		this.requestUserInputSchema = requestUserInputSchema;
 		this.execTool = Object.freeze({
 			name: EXEC,
 			label: "Execute code",
@@ -144,11 +206,51 @@ class ExtensionRuntime {
 				);
 			},
 		});
+		this.requestUserInputTool = Object.freeze({
+			name: REQUEST_USER_INPUT,
+			label: "Request user input",
+			description:
+				"Request user input for one to three short questions and wait for the response. Set autoResolutionMs only for non-blocking questions where continuing without an answer is acceptable.",
+			parameters: requestUserInputSchema,
+			executionMode: "sequential",
+			execute: async (
+				_toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+				context: ExtensionContext,
+			) => {
+				this.requireActive();
+				return await requestUserInput(params, context, signal);
+			},
+		});
 	}
 
 	async enable(context: ExtensionCommandContext): Promise<void> {
 		if (this.enabled) return;
 		this.lastError = undefined;
+		this.enabled = true;
+		if (!supportsCodeModeOnly(context)) return;
+		try {
+			await this.activate(context);
+		} catch (error) {
+			this.enabled = false;
+			throw error;
+		}
+	}
+
+	async modelChanged(context: ExtensionContext): Promise<void> {
+		if (!this.enabled) return;
+		this.lastError = undefined;
+		if (!supportsCodeModeOnly(context)) {
+			await this.deactivate();
+			return;
+		}
+		if (!this.active) await this.activate(context);
+	}
+
+	private async activate(context: ExtensionContext): Promise<void> {
+		if (this.active) return;
 		if (this.claimState === "partial") {
 			throw new Error("Code-mode tool registration is partial; reload required");
 		}
@@ -160,14 +262,11 @@ class ExtensionRuntime {
 		const limits = mergeSessionLimits(this.options.limits);
 		const probeTools = this.createNestedTools(context);
 		preflightDefinitions(probeTools, limits.maxCellLimits.toolDefinitionBytes);
-		const native = shouldUseNativeInput(context, this.options.inputMode ?? "auto");
-		const overlay = native
-			? (await import("../native/overlay.js")).prepareNativeOverlay(
-					this.pi,
-					context.modelRegistry,
-					context.model?.provider ?? "",
-				)
-			: undefined;
+		const overlay = (await import("../native/overlay.js")).prepareNativeOverlay(
+			this.pi,
+			context.modelRegistry,
+			context.model?.provider ?? "",
+		);
 
 		if (this.claimState === "unclaimed") this.assertNamesAvailable();
 		else this.assertOwnedTools();
@@ -179,13 +278,14 @@ class ExtensionRuntime {
 				this.claimState = "partial";
 				this.pi.registerTool(this.execTool);
 				this.pi.registerTool(this.waitTool);
+				this.pi.registerTool(this.requestUserInputTool);
 				this.assertOwnedTools();
 				this.claimState = "claimed";
 			}
 			this.assertOwnedTools();
-			overlay?.install();
-			this.pi.setActiveTools([EXEC, WAIT]);
-			assertExactNames(this.pi.getActiveTools(), [EXEC, WAIT], "active code-mode tools");
+			overlay.install();
+			this.pi.setActiveTools([EXEC, WAIT, REQUEST_USER_INPUT]);
+			assertExactNames(this.pi.getActiveTools(), [EXEC, WAIT, REQUEST_USER_INPUT], "active code-mode tools");
 			this.priorActive = prior;
 			this.controller = new CodeModeController({
 				host,
@@ -195,7 +295,7 @@ class ExtensionRuntime {
 				afterNestedTool: this.options.afterNestedTool,
 			} satisfies ControllerOptions);
 			this.providerOverlay = overlay;
-			this.enabled = true;
+			this.active = true;
 		} catch (error) {
 			if (claimAttempted) this.reconcileClaimAfterFailure();
 			const errors: unknown[] = [error];
@@ -205,11 +305,11 @@ class ExtensionRuntime {
 				errors.push(restoreError);
 			}
 			try {
-				overlay?.restore();
+				overlay.restore();
 			} catch (restoreError) {
 				errors.push(restoreError);
 			}
-			this.enabled = false;
+			this.active = false;
 			this.controller = undefined;
 			this.providerOverlay = undefined;
 			this.priorActive = undefined;
@@ -231,6 +331,12 @@ class ExtensionRuntime {
 	async disable(): Promise<void> {
 		if (!this.enabled) return;
 		this.enabled = false;
+		await this.deactivate();
+	}
+
+	private async deactivate(): Promise<void> {
+		if (!this.active) return;
+		this.active = false;
 		const controller = this.controller;
 		const overlay = this.providerOverlay;
 		const prior = this.priorActive ?? [];
@@ -278,7 +384,7 @@ class ExtensionRuntime {
 	private assertNamesAvailable(): void {
 		const conflicts = this.pi
 			.getAllTools()
-			.filter((tool) => tool.name === EXEC || tool.name === WAIT)
+			.filter((tool) => tool.name === EXEC || tool.name === WAIT || tool.name === REQUEST_USER_INPUT)
 			.map((tool) => tool.name);
 		if (conflicts.length) {
 			throw new Error(`Code-mode tool name conflict: ${[...new Set(conflicts)].join(", ")}`);
@@ -290,6 +396,7 @@ class ExtensionRuntime {
 		for (const [name, schema] of [
 			[EXEC, this.execSchema],
 			[WAIT, this.waitSchema],
+			[REQUEST_USER_INPUT, this.requestUserInputSchema],
 		] as const) {
 			const matches = all.filter((tool) => tool.name === name);
 			if (matches.length !== 1) throw new Error(`Code-mode tool ownership check failed for ${name}`);
@@ -324,14 +431,18 @@ class ExtensionRuntime {
 	}
 
 	private requireEnabled(): CodeModeController {
-		if (!this.enabled || !this.controller) throw new Error("Code mode is disabled");
+		if (!this.active || !this.controller) throw new Error("Code mode is not active");
 		return this.controller;
+	}
+
+	private requireActive(): void {
+		if (!this.active) throw new Error("Code mode is not active");
 	}
 
 	statusText(): string {
 		const metrics = this.controller?.metrics();
 		const parts = [
-			`code-mode: ${this.enabled ? "on" : "off"}`,
+			`code-mode: ${this.enabled ? (this.active ? "enabled, active" : "enabled, normal fallback") : "off"}`,
 			`tools: ${
 				this.claimState === "claimed"
 					? "claimed until reload"
@@ -339,7 +450,7 @@ class ExtensionRuntime {
 						? "partial until reload"
 						: "unclaimed"
 			}`,
-			`provider: ${this.providerOverlay ? `native freeform (${this.providerOverlay.providerId})` : "function input (no overlay)"}`,
+			`provider: ${this.providerOverlay ? `native CodeModeOnly (${this.providerOverlay.providerId})` : "normal (no overlay)"}`,
 		];
 		if (metrics) {
 			parts.push(
@@ -352,15 +463,138 @@ class ExtensionRuntime {
 	}
 }
 
-function shouldUseNativeInput(context: ExtensionCommandContext, mode: CodeModeInputMode): boolean {
+function supportsCodeModeOnly(context: ExtensionContext): boolean {
 	const model = context.model;
-	const eligible =
-		model?.api === "openai-codex-responses" && model.provider === "openai-codex" && model.id.startsWith("gpt-5.6");
-	if (mode === "function") return false;
-	if (mode === "freeform" && !eligible) {
-		throw new Error("Code-mode freeform input requires openai-codex, openai-codex-responses, and a gpt-5.6 model");
+	return model?.api === "openai-codex-responses" && model.provider === "openai-codex" && model.id.startsWith("gpt-5.6");
+}
+
+type InputOption = { label: string; description: string };
+type InputQuestion = { id: string; header: string; question: string; options: InputOption[] };
+
+async function requestUserInput(
+	params: unknown,
+	context: ExtensionContext,
+	signal: AbortSignal | undefined,
+): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, never> }> {
+	const input = requireRecord(params, "request_user_input input");
+	if (!exactKeys(input, ["questions", "autoResolutionMs"])) {
+		throw new Error("request_user_input input contains unsupported fields");
 	}
-	return eligible;
+	if (!Array.isArray(input.questions) || input.questions.length < 1 || input.questions.length > 3) {
+		throw new Error("request_user_input requires 1-3 questions");
+	}
+	const timeout =
+		input.autoResolutionMs === undefined
+			? undefined
+			: requireBoundedInteger(
+					input.autoResolutionMs,
+					MIN_AUTO_RESOLUTION_MS,
+					MAX_AUTO_RESOLUTION_MS,
+					"autoResolutionMs",
+				);
+	const questions = input.questions.map(parseInputQuestion);
+	const ids = new Set<string>();
+	for (const question of questions) {
+		if (ids.has(question.id)) throw new Error(`Duplicate request_user_input question id ${question.id}`);
+		ids.add(question.id);
+	}
+	const answers: Record<string, { answers: string[] }> = {};
+	for (const question of questions) answers[question.id] = { answers: [] };
+	const deadline = timeout === undefined ? undefined : Date.now() + timeout;
+	for (const question of questions) {
+		signal?.throwIfAborted();
+		const remaining = deadline === undefined ? undefined : deadline - Date.now();
+		if (remaining !== undefined && remaining <= 0) break;
+		const choices = question.options.map((option, index) => `${index + 1}. ${option.label} — ${option.description}`);
+		const other = "Other";
+		const dialogOptions = { signal, ...(remaining === undefined ? {} : { timeout: remaining }) };
+		const selected = await context.ui.select(
+			`${question.header}: ${question.question}`,
+			[...choices, other],
+			dialogOptions,
+		);
+		signal?.throwIfAborted();
+		if (selected === undefined) break;
+		if (selected === other) {
+			const inputRemaining = deadline === undefined ? undefined : deadline - Date.now();
+			if (inputRemaining !== undefined && inputRemaining <= 0) break;
+			const inputDialogOptions = {
+				signal,
+				...(inputRemaining === undefined ? {} : { timeout: inputRemaining }),
+			};
+			const value = await context.ui.input(`${question.header}: Other`, "Type your answer", inputDialogOptions);
+			signal?.throwIfAborted();
+			if (value === undefined) break;
+			if (value.length > MAX_OTHER_ANSWER_LENGTH) {
+				throw new Error(`request_user_input Other answer exceeds ${MAX_OTHER_ANSWER_LENGTH} characters`);
+			}
+			answers[question.id] = { answers: [value] };
+		} else {
+			const index = choices.indexOf(selected);
+			if (index < 0) throw new Error("request_user_input received an unknown UI choice");
+			const option = question.options[index];
+			if (!option) throw new Error("request_user_input choice index is unavailable");
+			answers[question.id] = { answers: [option.label] };
+		}
+	}
+	return {
+		content: [{ type: "text", text: JSON.stringify({ answers }) }],
+		details: {},
+	};
+}
+
+function parseInputQuestion(value: unknown): InputQuestion {
+	const question = requireRecord(value, "request_user_input question");
+	if (
+		!exactKeys(question, ["id", "header", "question", "options"]) ||
+		typeof question.id !== "string" ||
+		!/^[a-z][a-z0-9_]{0,63}$/.test(question.id) ||
+		typeof question.header !== "string" ||
+		question.header.length < 1 ||
+		question.header.length > 12 ||
+		typeof question.question !== "string" ||
+		question.question.length < 1 ||
+		question.question.length > 1_024 ||
+		!Array.isArray(question.options) ||
+		question.options.length < 2 ||
+		question.options.length > 3
+	) {
+		throw new Error("Invalid request_user_input question");
+	}
+	const options = question.options.map((entry) => {
+		const option = requireRecord(entry, "request_user_input option");
+		if (
+			!exactKeys(option, ["label", "description"]) ||
+			typeof option.label !== "string" ||
+			option.label.length < 1 ||
+			option.label.length > 80 ||
+			typeof option.description !== "string" ||
+			option.description.length < 1 ||
+			option.description.length > 512
+		) {
+			throw new Error("Invalid request_user_input option");
+		}
+		return { label: option.label, description: option.description };
+	});
+	if (new Set(options.map((option) => option.label)).size !== options.length) {
+		throw new Error(`Duplicate request_user_input option label for ${question.id}`);
+	}
+	if (options.some((option) => option.label === "Other")) {
+		throw new Error(`request_user_input options for ${question.id} must not include Other`);
+	}
+	return { id: question.id, header: question.header, question: question.question, options };
+}
+
+function requireBoundedInteger(value: unknown, min: number, max: number, label: string): number {
+	if (!Number.isSafeInteger(value) || (value as number) < min || (value as number) > max) {
+		throw new Error(`${label} must be an integer from ${min} to ${max}`);
+	}
+	return value as number;
+}
+
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+	const allowedSet = new Set(allowed);
+	return Object.keys(value).every((key) => allowedSet.has(key));
 }
 
 async function resolveHostIdentity(

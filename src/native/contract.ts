@@ -34,6 +34,9 @@ export function applyNativeExecContract<T extends ResponsesBody>(body: T, requir
 		if (item.type === "function_call") {
 			const callId = boundedId(item.call_id, "function call ID");
 			const name = requireString(item.name, "function name");
+			if (name !== "exec" && name !== "wait" && name !== "request_user_input") {
+				throw new Error(`Unsupported native function tool ${name}`);
+			}
 			recordCall(calls, callId, name === "exec" ? "exec-function" : "function");
 			if (name === "exec") {
 				const { arguments: argumentText, ...rest } = item;
@@ -69,10 +72,25 @@ export function applyNativeExecContract<T extends ResponsesBody>(body: T, requir
 }
 
 function validateToolSurface(tools: unknown[] | undefined): void {
-	if (!tools || tools.length !== 2) throw new Error("Native tool surface must contain exactly exec and wait");
+	if (!tools || (tools.length !== 3 && tools.length !== 4))
+		throw new Error(
+			"Native tool surface must contain exactly exec, wait, and request_user_input, plus optional hosted web search",
+		);
 	const names = new Set<string>();
+	let webSearch = false;
 	for (const tool of tools) {
 		if (!isRecord(tool)) throw new Error("Invalid native tool definition");
+		if (tool.type === "web_search") {
+			if (webSearch) throw new Error("Duplicate hosted web search tool");
+			if (
+				Object.keys(tool).length !== 2 ||
+				typeof tool.external_web_access !== "boolean" ||
+				Object.hasOwn(tool, "name")
+			)
+				throw new Error("Hosted web search tool must contain exactly type and boolean external_web_access");
+			webSearch = true;
+			continue;
+		}
 		const name = requireString(tool.name, "native tool name");
 		if (names.has(name)) throw new Error(`Duplicate native tool ${name}`);
 		names.add(name);
@@ -85,12 +103,15 @@ function validateToolSurface(tools: unknown[] | undefined): void {
 				tool.format.definition !== CODE_MODE_EXEC_GRAMMAR
 			)
 				throw new Error("Native exec tool must use exact code-mode grammar");
-		} else if (name === "wait") {
-			if (tool.type !== "function") throw new Error("Native wait tool must remain a function");
+		} else if (name === "wait" || name === "request_user_input") {
+			if (tool.type !== "function") throw new Error(`Native ${name} tool must remain a function`);
 		} else throw new Error(`Unsupported native tool ${name}`);
 	}
-	if (!names.has("exec") || !names.has("wait"))
-		throw new Error("Native tool surface must contain exactly exec and wait");
+	if (!names.has("exec") || !names.has("wait") || !names.has("request_user_input")) {
+		throw new Error("Native tool surface must contain exactly exec, wait, and request_user_input");
+	}
+	if (tools.length !== names.size + (webSearch ? 1 : 0))
+		throw new Error("Native tool surface contains an unsupported hosted tool");
 }
 
 function recordCall(

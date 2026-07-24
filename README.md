@@ -1,9 +1,14 @@
 # pi-code-mode
 
-Standalone, bounded JavaScript code mode for Pi 0.81.1. Extension is off by
-default. While enabled, model sees only `exec` and `wait`. GPT-5.6 models use
-native freeform `exec` only when model API is exactly `openai-codex-responses`,
-provider is exactly `openai-codex`, and model ID starts with `gpt-5.6`. Every other model uses function input `{ code: string }`.
+Standalone, bounded JavaScript code mode for Pi 0.81.1. Its tool policy matches
+Codex `CodeModeOnly`, not mixed `CodeMode`. Extension is off by default. When
+enabled on a supported model, Pi-callable tools are exactly `exec`, `wait`, and
+`request_user_input`. One installed provider hook may also enable OpenAI-hosted
+web search; provider executes it and Pi receives no web-search tool call or
+result. Support requires API `openai-codex-responses`, provider `openai-codex`,
+and a model ID starting with `gpt-5.6`. Other models keep normal Pi tools and
+provider behavior while the enabled preference remains ready for a supported
+model.
 
 Disabled load imports only inert facade and dependency-free constants. UUIDs, schemas, Pi tool
 factories, controller, host code, and provider bridge load when `/code-mode` first enables the
@@ -100,21 +105,29 @@ Advanced repository-local wrappers may import `createCodeModeExtension` from
 `src/index.ts` and pass the same complete identity. This Git package is a Pi
 source extension, not a compiled Node library.
 
-`inputMode` accepts:
-
-- `auto` (default): native freeform only for eligible GPT-5.6 OpenAI Codex models.
-- `function`: always keep `{ code: string }`; provider registry is untouched.
-- `freeform`: require eligible model or reject an enabling `/code-mode` toggle
-  before tool or provider mutation.
-
 Native transport matches published Pi 0.81.1 Codex SSE behavior: it posts to `<base>/codex/responses` (default `https://chatgpt.com/backend-api`), derives `chatgpt-account-id` from OAuth JWT, and sets Pi Codex headers. It intentionally uses bounded SSE only. WebSocket and zstd paths are excluded; timeout, cancellation, response callback, retry count, and retry-delay cap remain supported. Required authentication and protocol headers cannot be overridden.
 
-Native enable installs one guarded provider overlay through public Pi APIs.
-Disable, model change, and session shutdown restore prior provider config or
-absence. If another extension replaces or mutates overlay, code mode leaves
-foreign state untouched, disables, and reports ownership collision.
+After payload hooks, native request validation permits only exact custom `exec`,
+function `wait`, function `request_user_input`, and at most one `{ type: "web_search",
+external_web_access: boolean }` provider-hosted tool. Hosted search lifecycle and
+URL citations are validated and consumed without adding Pi tool calls or citation
+metadata to text blocks.
 
-An enabling `/code-mode` toggle validates identity without starting host. First
+Pi 0.81.1 exposes no Codex-style `DirectModelOnly` classification, so this
+extension explicitly owns its bounded `request_user_input` implementation. It
+uses only public `select` and `input` dialogs, supports 1-3 questions with 2-3
+choices plus automatic `Other`, and returns the upstream-compatible answer map.
+Nested built-ins and explicit `nestedTools` remain callable only from JavaScript
+through `exec`.
+
+Supported activation installs one guarded provider overlay through public Pi
+APIs. Switching to an unsupported model restores prior tools and provider while
+keeping code-mode preference enabled; switching back activates automatically.
+Disable and session shutdown restore prior provider config or absence. If
+another extension replaces or mutates overlay, code mode leaves foreign state
+untouched and reports ownership collision.
+
+Supported activation validates identity without starting host. First
 `exec` copies bytes from validated open file handle to package-owned private `0700` temporary
 directory, verifies copied size/hash, and spawns only private copy.
 
@@ -130,9 +143,10 @@ parent variables, including credentials, tokens, and proxies, are inherited.
 - `/code-mode-host-install` builds, probes, and installs package-owned host; reload is required.
 - `/code-mode-status` reports current state without changing it.
 
-On first successful enabling toggle, extension claims `exec` and `wait` until
-reload because Pi cannot unregister tools. A disabling toggle restores previous active tool order.
-If registration throws after it may have recorded either tool, status reports
+On first successful supported activation, extension claims `exec`, `wait`, and
+`request_user_input` until reload because Pi cannot unregister tools. A
+disabling toggle restores previous active tool order. If registration throws
+after it may have recorded any tool, status reports
 `partial until reload`; another enable fails until reload.
 
 Public hard bounds include 256 pending host operations, 5 s handshake, 2 s host
@@ -151,7 +165,7 @@ Optional callbacks:
 - `afterNestedTool`: return replacement result; replacement is revalidated.
 
 Nested calls and callbacks do not emit Pi nested tool events or transcript
-messages. Only outer `exec`/`wait` calls and results enter transcript.
+messages. Only outer `exec`/`wait`/`request_user_input` calls and results enter transcript.
 
 ## Security
 
