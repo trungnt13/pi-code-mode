@@ -57,6 +57,27 @@ function assertPackedFiles() {
 		fail(`Could not parse npm pack output: ${error instanceof Error ? error.message : String(error)}\n${output}`);
 	}
 	const packed = new Set(pack.files.map((file) => file.path));
+	const hostRoot = "vendor/codex/code-mode-host";
+	const provenance = JSON.parse(readFileSync(resolve(root, hostRoot, "provenance.json"), "utf8"));
+	if (!Array.isArray(provenance.files) || provenance.files.length === 0) {
+		fail("Standalone host provenance file map is empty");
+	}
+	const provenanceHostFiles = provenance.files.map((entry) => {
+		if (typeof entry?.path !== "string" || !entry.path.startsWith("codex-rs/")) {
+			fail(`Invalid standalone host provenance path: ${String(entry?.path)}`);
+		}
+		return `${hostRoot}/${entry.path}`;
+	});
+	const requiredHostFiles = [
+		`${hostRoot}/provenance.json`,
+		`${hostRoot}/codex-rs/Cargo.toml`,
+		`${hostRoot}/codex-rs/Cargo.lock`,
+		`${hostRoot}/codex-rs/code-mode-host/Cargo.toml`,
+		`${hostRoot}/codex-rs/code-mode/src/remote_session/connection/driver.rs`,
+		`${hostRoot}/codex-rs/code-mode-protocol/Cargo.toml`,
+		`${hostRoot}/codex-rs/protocol/src/tool_name.rs`,
+		`${hostRoot}/codex-rs/utils/cargo-bin/src/lib.rs`,
+	];
 	const required = command("git", [
 		"ls-files",
 		"--",
@@ -73,8 +94,21 @@ function assertPackedFiles() {
 	for (const path of [...required, "package.json"]) {
 		if (!packed.has(path)) fail(`npm package payload is missing ${path}`);
 	}
+	for (const path of [...requiredHostFiles, ...provenanceHostFiles]) {
+		if (!packed.has(path)) fail(`npm package payload is missing standalone host source ${path}`);
+	}
 	for (const path of packed) {
 		if (path === "dist" || path.startsWith("dist/")) fail(`npm package payload unexpectedly contains ${path}`);
+		if (
+			path.includes("/target/") ||
+			path.includes("/.cargo/") ||
+			path.includes("/.staging-") ||
+			path.includes("/.publish-") ||
+			path.includes("/.current-") ||
+			path.endsWith("/codex-code-mode-host") ||
+			path.endsWith("/codex-code-mode-host.exe")
+		)
+			fail(`npm package payload unexpectedly contains host build/cache artifact ${path}`);
 	}
 }
 
@@ -124,13 +158,26 @@ function assertRpcLoad() {
 		});
 	const commandResponse = events.find((event) => event.id === "commands");
 	if (!commandResponse?.success) fail("Pi RPC get_commands failed");
-	const codeMode = commandResponse.data?.commands?.find(
-		(command) => command.name === "code-mode" && command.source === "extension",
-	);
+	const extensionCommands =
+		commandResponse.data?.commands?.filter((command) => {
+			const sourcePath = command.sourceInfo?.path ?? command.path;
+			return (
+				command.source === "extension" &&
+				typeof sourcePath === "string" &&
+				sourcePath.replaceAll("\\", "/").endsWith("/src/index.ts")
+			);
+		}) ?? [];
+	const expectedCommands = ["code-mode", "code-mode-host-install", "code-mode-status"];
+	const actualCommands = extensionCommands.map((command) => command.name).sort();
+	if (
+		actualCommands.length !== expectedCommands.length ||
+		actualCommands.some((name, index) => name !== expectedCommands[index])
+	) {
+		fail(`Extension registered unexpected commands: ${JSON.stringify(actualCommands)}`);
+	}
+	const codeMode = extensionCommands.find((command) => command.name === "code-mode");
 	if (!codeMode) fail("Installed extension did not register /code-mode");
-	const codeModeStatus = commandResponse.data?.commands?.find(
-		(command) => command.name === "code-mode-status" && command.source === "extension",
-	);
+	const codeModeStatus = extensionCommands.find((command) => command.name === "code-mode-status");
 	if (!codeModeStatus) fail("Installed extension did not register /code-mode-status");
 	const sourcePath = codeMode.sourceInfo?.path ?? codeMode.path;
 	if (typeof sourcePath !== "string" || !sourcePath.replaceAll("\\", "/").endsWith("/src/index.ts")) {

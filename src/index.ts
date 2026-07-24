@@ -52,6 +52,8 @@ interface ExtensionEngine {
 class LazyExtensionRuntime {
 	private readonly mutex = new LifecycleMutex();
 	private engine?: ExtensionEngine;
+	private installAbort?: AbortController;
+	private reloadRequired = false;
 	private lastError?: string;
 
 	constructor(
@@ -64,12 +66,43 @@ class LazyExtensionRuntime {
 			description: "Toggle bounded code mode on or off",
 			handler: async (args, context) => {
 				if (args.trim()) throw new Error("Usage: /code-mode");
+				if (this.installAbort) throw new Error("/code-mode-host-install is running");
+				if (this.reloadRequired) throw new Error("Code-mode host was installed; run /reload before enabling");
 				await this.mutex.run(async () => {
 					if (!context.isIdle()) throw new Error("/code-mode requires idle agent");
 					if (this.engine?.isEnabled()) await this.engine.disable();
 					else await this.enable(context);
 				});
 				context.ui.notify(this.statusText(), "info");
+			},
+		});
+		this.pi.registerCommand("code-mode-host-install", {
+			description: "Build, validate, and install package-owned code-mode host",
+			handler: async (args, context) => {
+				if (args.trim()) throw new Error("Usage: /code-mode-host-install");
+				if (!context.isIdle()) throw new Error("/code-mode-host-install requires idle agent");
+				if (this.engine?.isEnabled()) throw new Error("/code-mode-host-install requires code mode to be disabled");
+				if (this.installAbort) throw new Error("/code-mode-host-install is already running");
+				const abort = new AbortController();
+				this.installAbort = abort;
+				try {
+					const result = await this.mutex.run(async () => {
+						if (!context.isIdle()) throw new Error("/code-mode-host-install requires idle agent");
+						if (this.engine?.isEnabled()) {
+							throw new Error("/code-mode-host-install requires code mode to be disabled");
+						}
+						const module = await import("./host-install.js");
+						return await module.installCodeModeHost(context, abort.signal);
+					});
+					this.reloadRequired = true;
+					const warningText = result.warnings.length ? ` Warnings: ${result.warnings.join(" ")}` : "";
+					context.ui.notify(
+						`Code-mode host installed: ${result.sha256} (${result.executablePath}). Run /reload before /code-mode.${warningText}`,
+						result.warnings.length ? "warning" : "info",
+					);
+				} finally {
+					if (this.installAbort === abort) this.installAbort = undefined;
+				}
 			},
 		});
 		this.pi.registerCommand("code-mode-status", {
@@ -83,6 +116,7 @@ class LazyExtensionRuntime {
 			await this.mutex.run(async () => this.engine?.disable());
 		});
 		this.pi.on("session_shutdown", async () => {
+			this.installAbort?.abort(new Error("Code-mode host install cancelled by session shutdown"));
 			await this.mutex.run(async () => this.engine?.disable());
 		});
 	}
@@ -103,11 +137,13 @@ class LazyExtensionRuntime {
 	}
 
 	private statusText(): string {
-		if (this.engine) return this.engine.statusText();
+		const base = this.engine
+			? [this.engine.statusText()]
+			: ["code-mode: off", "tools: unclaimed", "provider: function input (no overlay)"];
 		return [
-			"code-mode: off",
-			"tools: unclaimed",
-			"provider: function input (no overlay)",
+			...base,
+			...(this.installAbort ? ["host install: running"] : []),
+			...(this.reloadRequired ? ["host install: complete; reload required"] : []),
 			...(this.lastError ? [`last error: ${this.lastError}`] : []),
 		].join("; ");
 	}

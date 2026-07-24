@@ -1,6 +1,7 @@
 # Pi code-mode architecture
 
-Status: Milestone 3B implemented; independent correctness/performance and disabled/off-path reruns complete; live paid GPT-5.6 gate remains unrun  
+Status: runtime and package-owned source installer implemented and locally validated on Apple arm64; live paid GPT-5.6 gate remains unrun
+
 Target: published `@earendil-works/pi-coding-agent` 0.81.1  
 Package: `pi-code-mode`
 
@@ -16,9 +17,9 @@ Expected provider behavior:
 - Other providers use normal function input `{ code: string }`.
 - Unsupported providers reject any request that forces freeform before network work starts.
 
-Extension is off by default. Import and extension load register only `/code-mode` and
-`/code-mode-status`. Disabled load must not register tools, replace providers, start a host, touch
-filesystem or network, create a timer, or install an exit hook.
+Extension is off by default. Import and extension load register only `/code-mode`,
+`/code-mode-host-install`, and `/code-mode-status`. Disabled load must not register tools, replace
+providers, start a host, touch filesystem or network, create a timer, or install an exit hook.
 
 This design depends only on published Pi APIs and package-owned code. It does not import protected
 Pi or Codex checkout internals. Protected repositories are source inputs during the relocation and
@@ -31,7 +32,7 @@ reported as such; it is not converted into a claim.
 
 Extension uses these public capabilities:
 
-- `registerCommand` for `/code-mode` and `/code-mode-status`;
+- `registerCommand` for `/code-mode`, `/code-mode-host-install`, and `/code-mode-status`;
 - lazy `registerTool` for `exec` and `wait`;
 - `getAllTools`, `getActiveTools`, and `setActiveTools` for conflict detection and activation;
 - public coding-tool factories for default nested tools;
@@ -72,7 +73,7 @@ Pi extension
        └─ function path       every other supported provider
 
 local stdio protocol
-  └─ operator-built codex-code-mode-host
+  └─ operator-built package-owned codex-code-mode-host
        └─ V8 isolate per bounded session/cell lifecycle
 ```
 
@@ -398,8 +399,16 @@ and provider error; 256 headers and 64 KiB header bytes; 8 retries. These are ex
 
 ## 9. Host trust, provisioning, and protocol
 
-Host is operator-built and local-only. Package ships no executable, downloader, default URL, or
-automatic build. Required facts come from factory options or these five explicit variables:
+Host is package-built and local-only. Package owns standalone Rust workspace at
+`vendor/codex/code-mode-host/codex-rs/`; it ships no executable, downloader, or default URL.
+`/code-mode-host-install` validates every vendored file against pinned provenance, runs locked
+release Cargo build without shell, probes exact protocol/resource contract, publishes executable
+into immutable content-hash directory, and atomically replaces strict `current.json`. Cargo/rustc
+and artifacts required by locked registry and V8 dependency graph are build prerequisites.
+Network or populated Cargo caches may be required; offline builds are not claimed.
+
+Runtime identity precedence is complete factory options, complete five-variable environment, then
+strict installed manifest:
 
 - `PI_CODE_MODE_HOST_PATH`
 - `PI_CODE_MODE_HOST_SHA256`
@@ -407,9 +416,11 @@ automatic build. Required facts come from factory options or these five explicit
 - `PI_CODE_MODE_HOST_PLATFORM`
 - `PI_CODE_MODE_HOST_ARCH`
 
-One source supplies all five values; partial factory options or partial environment configuration
-fail. Factory options take precedence only when complete. Path must be explicit, absolute,
-canonical, regular, local file path. URL, PATH lookup, shell command, symlink final target,
+One explicit source supplies all five values; partial factory options or partial environment
+configuration fail without installed fallback. Installed manifest must have exact schema fields,
+package/source/probe identity, protocol version, sole `resource_limits_v1` capability, current
+platform/architecture, and canonical content-derived executable path. All paths must be absolute,
+canonical, regular, local file paths. URL, PATH lookup, shell command, symlink final target,
 directory, device, socket, and FIFO are rejected.
 
 Before each spawn, provisioner opens source file once without executing it and validates:
@@ -438,18 +449,29 @@ V8 isolate limits, deadlines, and process boundaries reduce accidental damage. T
 security sandbox: nested tools intentionally retain their granted filesystem and shell authority.
 Users must not run untrusted JavaScript or untrusted host binaries.
 
-Pinned host source:
+Package-owned host source:
 
-- Codex baseline commit: `b5748e6e3cbc3c9831f84aa016486721b4923d1c`
+- copied from patched Codex checkout commit:
+  `808d3c2702ce8eae007c457aa930e7c3b68dd5f6`
+- patch baseline commit: `b5748e6e3cbc3c9831f84aa016486721b4923d1c`
 - scoped patch SHA-256:
   `61f8a64ab08a302f7321ac4f1210c4ee1ff3abf4df3b064a6fb588b431a5b024`
-- validated host SHA-256:
-  `9086dd45be73059b29af03b88fff361d65dcd39ee2ec59f2e7079563386ad914`
+- workspace: `vendor/codex/code-mode-host/codex-rs/Cargo.toml`
+- preserved upstream crates and paths:
+  `code-mode-host`, `code-mode`, `code-mode-protocol`, and `utils/cargo-bin`
+- compatibility boundary: local `codex-protocol` contains only exact upstream `ToolName`, which is
+  the sole production API these crates use from broad Codex protocol internals
 - build:
-  `cargo build --locked --release -p codex-code-mode-host --target aarch64-apple-darwin`
-- build location: disposable clean Codex clone at pinned baseline with recorded patch applied
+  `cargo build --manifest-path vendor/codex/code-mode-host/codex-rs/Cargo.toml --locked --release -p codex-code-mode-host`
 
-Package tarball must contain source patch and attribution only, never executable host.
+All modules, remote-session paths, tests, crate names, and file layout in the three selected source
+trees remain byte-identical to patched upstream source. A machine-readable provenance map records
+copied and locally authored files. The historical patch remains bootstrap/review evidence; normal
+builds do not apply it or require a Codex checkout.
+
+Package tarball must contain standalone source, lockfile, patch, provenance, license, and notice,
+never executable host, Cargo target, registry cache, installer staging, or prototype artifact.
+Current build, installer, and raw protocol lifecycle evidence is Apple arm64 only.
 
 ## 10. Bun and Node runtime paths
 
@@ -642,7 +664,9 @@ Artifacts copied during relocation record:
 
 | Source | Provenance | Package use |
 |---|---|---|
-| Codex host patch | pinned baseline and digest in section 9 | source-only host construction |
+| Codex standalone host trees | patched Codex commit, per-file hashes, and structural classification in `vendor/codex/code-mode-host/provenance.json` | normal source build |
+| minimal `codex-protocol` compatibility crate | exact upstream `ToolName` plus local manifest/export | avoids unrelated Codex internals |
+| Codex host patch | pinned baseline and digest in section 9 | bootstrap/history evidence |
 | Codex license/notice | Apache-2.0 upstream files | redistribution attribution |
 | bounded host protocol/client modules | owned protected Pi work, archived hashes | adapted package runtime |
 | provider overlay | `@howaboua/pi-codex-conversion` commit `3d55dffaf22a47854f568d3d2d742b979cfbc55f` | MIT-attributed native bridge |
@@ -658,9 +682,21 @@ Relocation process, before protected cleanup:
 7. Delete owned untracked files only when current hashes equal archived hashes.
 8. Compare unrelated pre/post diff bytes and prove no owned code-mode changes remain.
 
-Upstream sync is explicit: review upstream provider/host changes, regenerate source archive from
-clean pinned commits, update provenance and digests, run full fixture and clean-room gates, then
-record decision. Runtime never fetches upstream source.
+Upstream host sync is explicit and allowlisted. Start from a clean reviewed Codex commit, apply or
+replace the historical patch without three-way or fuzzy merging, copy complete selected trees,
+regenerate per-file hashes and standalone lock, inspect every structural deviation, then run the
+locked release build and full behavioral/resource gates. Normal install/runtime never reads,
+fetches, or resolves modules from a Codex checkout.
+
+`npm run sync:host -- --codex PATH --commit 40HEX --output NEW_PATH` prepares
+only first review stage. It verifies exact clean checkout and current vendored
+preimage, reads complete allowlisted trees from Git blobs, carries classified
+local scaffold files as explicit inputs, snapshots full verified current
+preimage, and emits machine report plus binary no-index diff from captured
+bytes. Output must be new and outside checkout/package/agent roots. Run without
+concurrent package edits; full preimage is revalidated before success. Script
+never applies historical patch, regenerates lock, edits vendor, or activates
+candidate.
 
 ## 12. Failure modes and trade-offs
 
@@ -691,8 +727,9 @@ Accepted trade-offs:
 - Pi cannot unregister lazy tool names, so first enable reserves them until reload.
 - Restoring saved active list intentionally discards tool-surface changes attempted while package
   exclusively owned enabled surface.
-- Local pinned host setup costs operator effort and platform-specific builds, but removes binary
-  download and provenance ambiguity.
+- Local package-owned host setup costs Cargo/rustc, registry/V8 artifacts, build time, and
+  platform-specific validation, but removes binary download and checkout dependency.
+- Maintaining a source fork requires explicit upstream security and bug-fix review.
 - V8 resource controls limit mistakes; they do not make code execution safe against hostile code.
 - Live GPT-5.6 behavior cannot be claimed without credentials and approved paid runs.
 - Windows host integration is unrun; current build and process evidence are Apple aarch64 only.
@@ -705,14 +742,18 @@ files outside package source and must be reproducible.
 ### 13.1 Build and packaging
 
 - Typecheck, build, lint, and package dry-run pass.
-- Packed artifact contains expected source, patch, license, and notice; no executable host.
+- Vendored workspace builds with `cargo build --locked --release` without a Codex checkout.
+- Raw host probe proves protocol v1, exact `resource_limits_v1`, process limits, session/cell limit
+  echoes, open/execute/shutdown lifecycle, cell cleanup, and clean process exit.
+- Packed artifact contains standalone source/lock/provenance, patch, license, and notice; no
+  executable host, `target`, registry cache, or prototype artifact.
 - Clean-room install runs outside workspace against published Pi 0.81.1 with protected checkout
   absent from module resolution.
 
 ### 13.2 Disabled and lifecycle correctness
 
 - Disabled import records zero tool registration, provider overlay, spawn, filesystem, network,
-  timer, and exit-hook events except `/code-mode` command registration.
+  timer, and exit-hook events; it registers exactly three commands listed in section 1.
 - First and repeated toggle cycles restore exact active-tool order.
 - Tool-name fixtures cover allowed state (both names absent, then both package source/schema
   markers resolve and exact active list is `["exec", "wait"]`) and excluded state (either name
@@ -753,6 +794,9 @@ files outside package source and must be reproducible.
 ### 13.4 Provenance and protected cleanup
 
 - Copied host patch hash equals recorded digest and applies to recorded Codex baseline.
+- Selected vendored source trees compare byte-identical with patched recorded source.
+- Every vendored workspace file has source classification and SHA-256 in machine-readable
+  provenance.
 - Protected Pi and Codex worktrees contain no remaining owned code-mode diff.
 - Unrelated protected changes have byte-identical pre/post diffs.
 

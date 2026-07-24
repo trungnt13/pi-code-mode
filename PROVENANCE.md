@@ -2,22 +2,67 @@
 
 ## Codex host
 
-- Baseline: `b5748e6e3cbc3c9831f84aa016486721b4923d1c`
+- Standalone workspace:
+  `vendor/codex/code-mode-host/codex-rs/Cargo.toml`
+- Copied patched checkout:
+  `808d3c2702ce8eae007c457aa930e7c3b68dd5f6`
+- Patch baseline: `b5748e6e3cbc3c9831f84aa016486721b4923d1c`
 - Patch: `vendor/codex/codex-code-mode-host.patch`
 - Patch SHA-256:
   `61f8a64ab08a302f7321ac4f1210c4ee1ff3abf4df3b064a6fb588b431a5b024`
-- Validated host SHA-256:
-  `9086dd45be73059b29af03b88fff361d65dcd39ee2ec59f2e7079563386ad914`
+- Standalone lock SHA-256:
+  `ad36b876206bf917d3519d621738e5c225ab90b6417d3dac28d88c05c8447a98`
+- Prototype Apple-arm64 release host SHA-256:
+  `b13dd2df260404f0a39e781b0756359f5a9750bb159836e6e3bd90d7d0878aae`
+- Prototype release host size: `72583864` bytes
 - Build:
-  `cargo build --locked --release -p codex-code-mode-host --target aarch64-apple-darwin`
-- Build location: disposable clean clone with patch applied
+  `cargo build --manifest-path vendor/codex/code-mode-host/codex-rs/Cargo.toml --locked --release -p codex-code-mode-host`
+- Prototype toolchain: rustc 1.94.1, Cargo 1.94.1, Apple arm64
+- Machine-readable file map:
+  `vendor/codex/code-mode-host/provenance.json`
 
-Package never ships executable host.
+Package owns complete patched upstream `code-mode-host`, `code-mode`, and
+`code-mode-protocol` trees. Their crate names, modules, files, tests, and
+remote-session structure remain byte-identical to patched disposable source.
+Exact upstream `utils/cargo-bin` test helper is retained.
+
+Production source used only `codex_protocol::ToolName` from broad Codex protocol
+crate. Standalone workspace therefore keeps a minimal `codex-protocol`
+compatibility crate: `tool_name.rs` is exact upstream source; local manifest and
+`lib.rs` expose it. Root workspace manifest and independently generated lockfile
+are local structural deviations. Every copied or local file, source path,
+classification, size, and SHA-256 is recorded in machine-readable map.
+
+Cargo/rustc and locked registry/V8 artifacts remain build prerequisites.
+Network or populated Cargo caches may be required. Offline support is not
+claimed. Package ships no executable host.
+
+Maintainer sync command:
+
+```sh
+npm run sync:host -- --codex /path/to/codex --commit <40-hex-commit> --output /new/output/path
+```
+
+Command requires clean checkout at exact requested commit and validates every
+current provenance-mapped byte plus patch digest before creating output. It
+discovers complete selected upstream trees from commit tree, records Git blob
+IDs and content SHA-256, retains only classified local standalone scaffolds,
+and emits captured `current-preimage/`, candidate, review report, and diff from
+same verified bytes. Command requires no concurrent package edits and
+revalidates full package preimage before success. Candidate is never merged,
+patched, locked, built, or activated automatically.
 
 Patch keeps V8's process-wide platform worker count CPU-aware and bounded to four. Host uses a
 current-thread Tokio runtime with two blocking workers, matching its stdin and serialized stdout
 consumers. New blocking-pool consumers require a cap review and fresh resource, cancellation,
 backpressure, and throughput gates.
+
+Package installer rerun on Apple arm64 produced release SHA-256
+`fa02384c575fed33cf041bf8a80563fa5b44e5a9c97a7bdf8ab36afd285fea9f`
+(72,620,776 bytes) and proved locked release build plus raw protocol v1 lifecycle:
+`resource_limits_v1`, process ceilings, exact session/cell limit echoes,
+open/execute/cell cleanup/shutdown, and clean exit. This evidence covers Apple
+arm64 only.
 
 ## Relocated Pi work
 

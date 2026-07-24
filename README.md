@@ -25,8 +25,9 @@ pi install git:github.com/trungnt13/pi-code-mode@<tag-or-commit>
 
 Pi loads `src/index.ts` directly through its TypeScript extension loader. No
 manual dependency install or build is required. Restart Pi or run `/reload`,
-then use `/code-mode-status` to verify the extension loaded. Code mode remains
-off until `/code-mode` successfully toggles it on.
+then use `/code-mode-host-install` once to build, probe, and install host. Run
+`/reload` again after successful host install. Code mode remains off until
+`/code-mode` successfully toggles it on.
 
 For local development:
 
@@ -41,13 +42,47 @@ Bun-only fast path is enabled without benchmark evidence.
 
 ## Host
 
-Build host from pinned Codex source using [vendor patch](vendor/codex/codex-code-mode-host.patch).
-Patch bounds V8 platform workers by available CPU count (maximum four) and Tokio blocking workers
-to current stdin/stdout needs. See [architecture](ARCHITECTURE.md) and
-[provenance](PROVENANCE.md) before adding another blocking host operation.
-Package includes no host binary, downloader, URL, or automatic build.
+Recommended setup inside Pi:
 
-Configure all five variables:
+```text
+/code-mode-host-install
+/reload
+/code-mode
+```
+
+Installer verifies package-owned source against provenance map, runs locked
+release Cargo build without shell or Codex checkout, probes protocol and
+resource-limit contract, then publishes executable by content hash and
+atomically replaces `current.json` under Pi agent directory. Failed build,
+probe, or publish leaves prior manifest active. Cargo/rustc and locked
+registry/V8 artifacts are build prerequisites. First build may need network;
+offline builds are not claimed. Package includes source and lockfile, but no
+host binary, downloader, or URL.
+
+Source preserves patched upstream `code-mode-host`, `code-mode`, and
+`code-mode-protocol` trees, including remote-session paths and tests. Historical
+[vendor patch](vendor/codex/codex-code-mode-host.patch) remains bootstrap and
+review evidence; normal build does not apply it or need Codex checkout. See
+[architecture](ARCHITECTURE.md) and [provenance](PROVENANCE.md) before changing
+host source or adding blocking work.
+
+Maintainers can prepare a review-only candidate from a clean exact Codex checkout:
+
+```sh
+npm run sync:host -- --codex /path/to/codex --commit <40-hex-commit> --output /new/output/path
+```
+
+Output must not exist and must remain outside checkout, package, and Pi agent
+directories. Command validates current vendored preimage, copies complete
+allowlisted upstream trees plus local standalone scaffold inputs, and writes
+immutable `current-preimage/` and `candidate/` trees, hash report, and binary
+diff. Run it without concurrent package edits; final preimage revalidation
+rejects detected changes. It never applies patch, regenerates lockfile, changes
+vendor source, or activates candidate.
+
+Factory host identity remains highest-precedence advanced override. Otherwise,
+complete five-variable environment identity overrides installed manifest.
+Partial environment identity fails and never falls through. Configure all five:
 
 ```sh
 export PI_CODE_MODE_HOST_PATH=/absolute/canonical/path/to/codex-code-mode-host
@@ -56,6 +91,10 @@ export PI_CODE_MODE_HOST_SIZE=<decimal-bytes>
 export PI_CODE_MODE_HOST_PLATFORM=darwin
 export PI_CODE_MODE_HOST_ARCH=arm64
 ```
+
+With neither explicit source configured, runtime strictly validates installed
+`current.json`, executable path, mode, size, hash, platform, and architecture.
+Current build, installer, and raw lifecycle evidence covers Apple arm64 only.
 
 Advanced repository-local wrappers may import `createCodeModeExtension` from
 `src/index.ts` and pass the same complete identity. This Git package is a Pi
@@ -88,6 +127,7 @@ parent variables, including credentials, tokens, and proxies, are inherited.
 ## Commands
 
 - `/code-mode` toggles code mode on or off.
+- `/code-mode-host-install` builds, probes, and installs package-owned host; reload is required.
 - `/code-mode-status` reports current state without changing it.
 
 On first successful enabling toggle, extension claims `exec` and `wait` until

@@ -155,7 +155,7 @@ class ExtensionRuntime {
 		if (this.claimState === "unclaimed") this.assertNamesAvailable();
 		else this.assertOwnedTools();
 
-		const host = resolveHostIdentity(this.options.host, process.env);
+		const host = await resolveHostIdentity(this.options.host, process.env);
 		await validateHostIdentity(host);
 		const limits = mergeSessionLimits(this.options.limits);
 		const probeTools = this.createNestedTools(context);
@@ -363,7 +363,10 @@ function shouldUseNativeInput(context: ExtensionCommandContext, mode: CodeModeIn
 	return eligible;
 }
 
-function resolveHostIdentity(factory: LocalHostIdentity | undefined, env: NodeJS.ProcessEnv): HostIdentity {
+async function resolveHostIdentity(
+	factory: LocalHostIdentity | undefined,
+	env: NodeJS.ProcessEnv,
+): Promise<HostIdentity> {
 	if (factory) return validateCompleteHost(factory);
 	const values = {
 		executablePath: env.PI_CODE_MODE_HOST_PATH,
@@ -373,12 +376,13 @@ function resolveHostIdentity(factory: LocalHostIdentity | undefined, env: NodeJS
 		architecture: env.PI_CODE_MODE_HOST_ARCH,
 	};
 	const present = Object.values(values).filter((value) => value !== undefined).length;
+	if (present === 0) {
+		const installed = await (await import("../installed-host.js")).resolveInstalledHostIdentity();
+		if (!installed) throw new Error("Code-mode host is not configured");
+		return installed;
+	}
 	if (present !== 5) {
-		throw new Error(
-			present === 0
-				? "Code-mode host is not configured"
-				: "Code-mode host environment must define all five PI_CODE_MODE_HOST_* variables",
-		);
+		throw new Error("Code-mode host environment must define all five PI_CODE_MODE_HOST_* variables");
 	}
 	const { executablePath, sha256, sizeBytes, platform, architecture } = values;
 	if (

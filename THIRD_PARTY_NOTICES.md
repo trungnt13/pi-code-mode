@@ -1,12 +1,19 @@
 # Third-party notices
 
-## OpenAI Codex code-mode host patch
+## OpenAI Codex code-mode host source and patch
 
+`vendor/codex/code-mode-host/codex-rs`, historical
 `vendor/codex/codex-code-mode-host.patch`, `vendor/codex/LICENSE`, and
-`vendor/codex/NOTICE` derive from OpenAI Codex baseline
-`b5748e6e3cbc3c9831f84aa016486721b4923d1c`. Codex is licensed under
-Apache License 2.0. Patch SHA-256:
+`vendor/codex/NOTICE` derive from OpenAI Codex. Standalone source was copied
+from patched checkout `808d3c2702ce8eae007c457aa930e7c3b68dd5f6`;
+patch baseline is `b5748e6e3cbc3c9831f84aa016486721b4923d1c`.
+Codex is licensed under Apache License 2.0. Patch SHA-256:
 `61f8a64ab08a302f7321ac4f1210c4ee1ff3abf4df3b064a6fb588b431a5b024`.
+
+Selected upstream crate trees and test helper are retained with original
+structure. Local workspace/compatibility manifests and lockfile make selected
+source build independently from Codex checkout. Exact file classifications and
+hashes are in `vendor/codex/code-mode-host/provenance.json`.
 
 ## Pi
 

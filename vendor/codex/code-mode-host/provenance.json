@@ -1,0 +1,556 @@
+{
+  "files": [
+    {
+      "classification": "local_generated_lockfile",
+      "path": "codex-rs/Cargo.lock",
+      "sha256": "ad36b876206bf917d3519d621738e5c225ab90b6417d3dac28d88c05c8447a98",
+      "size_bytes": 34088,
+      "source_path": null
+    },
+    {
+      "classification": "local_standalone_workspace",
+      "path": "codex-rs/Cargo.toml",
+      "sha256": "b02b65537454f9334b851513348f6cec10355e5bbe7c5156cc42cd9dadceb439",
+      "size_bytes": 1190,
+      "source_path": null
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/BUILD.bazel",
+      "sha256": "2d2f3d366737d00c986ffcee5b771255c70436df093e96b78b2932e9d926c097",
+      "size_bytes": 121,
+      "source_path": "codex-rs/code-mode/BUILD.bazel"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/Cargo.toml",
+      "sha256": "4b5be3f762dac54b445dad8c5673966d1aba341cd44c2112de826f7fa62b9e77",
+      "size_bytes": 781,
+      "source_path": "codex-rs/code-mode/Cargo.toml"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/cell_actor/callbacks.rs",
+      "sha256": "33d03f930e7ae8d2b7a0cbaa4b0de0d633bb1b25dea1d9a6c6d6efeb6a4ce9cb",
+      "size_bytes": 4783,
+      "source_path": "codex-rs/code-mode/src/cell_actor/callbacks.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/cell_actor/callbacks_tests.rs",
+      "sha256": "41cc2610e965d9dfc33450a6cd0fc9536841735b1e0409bcca6799f3687d1c47",
+      "size_bytes": 4124,
+      "source_path": "codex-rs/code-mode/src/cell_actor/callbacks_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/cell_actor/conversions.rs",
+      "sha256": "6030fa4322e4c198c296f8f1b9190f02185411d7dfdb056cde2cd9da9b4c2237",
+      "size_bytes": 2468,
+      "source_path": "codex-rs/code-mode/src/cell_actor/conversions.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/cell_actor/mod.rs",
+      "sha256": "1ca9468e89d30895b8754573162b5c71ee80cde3a73d37ce6f58ee97b9456403",
+      "size_bytes": 27064,
+      "source_path": "codex-rs/code-mode/src/cell_actor/mod.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/cell_actor/tests.rs",
+      "sha256": "32496f8092a373f140c02601e41ee85079393cca7b0c841f97a56b527239b78d",
+      "size_bytes": 21138,
+      "source_path": "codex-rs/code-mode/src/cell_actor/tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/cell_actor/types.rs",
+      "sha256": "d785985923fecfa654b5235a87edc179f2669895f56982f8b71be2a85b728247",
+      "size_bytes": 15026,
+      "source_path": "codex-rs/code-mode/src/cell_actor/types.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/lib.rs",
+      "sha256": "45e299e710ba0f1d0e096ae9a5dfb43435f0a4b3a004d4903da1fe673678592b",
+      "size_bytes": 568,
+      "source_path": "codex-rs/code-mode/src/lib.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/cell_ids.rs",
+      "sha256": "999e86c56a8d6ecc9b071a4bad87bddf6b33ee87e535dcaab88a5ff4c6c53045",
+      "size_bytes": 3639,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/cell_ids.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/cleanup.rs",
+      "sha256": "4276a2de97a9245efa02cf3b50f3cc01dbd3a53dc513dfe594e5f79b77de005f",
+      "size_bytes": 947,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/cleanup.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/commands.rs",
+      "sha256": "ed678884c2b07215db4e593476e936ffbdc66d5fd8966c14a80b390b829fe24c",
+      "size_bytes": 9798,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/commands.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/delegate_runtime.rs",
+      "sha256": "cfef51dda41bc239f090ba82e77d956e599bd55b184443dbaae73a93b6b03afe",
+      "size_bytes": 10928,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/delegate_runtime.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/request_tracker.rs",
+      "sha256": "028464dacb5226f250b19c711d75faa73d4316a2781275bbf63cda3f6b332e86",
+      "size_bytes": 6074,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/request_tracker.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/responses.rs",
+      "sha256": "2475e482cb6a51e78dbe609420804a08d06f75636805786e04f7426f38b39485",
+      "size_bytes": 15951,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/responses.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/session_registry.rs",
+      "sha256": "5155047debbe2bfa28cd3b444ced9f1723de5135c28e6f475af73af5ba633527",
+      "size_bytes": 6826,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/session_registry.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver/types.rs",
+      "sha256": "f7a0f7c8346bc00cd120103b5d3f0bff743bb152f554bbb09f8f150bb1948705",
+      "size_bytes": 6319,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver/types.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver.rs",
+      "sha256": "ac07499a1130b4816bf6ead3eb2c8c81ff0ecec71387fe23f3eda9d5a9a3690d",
+      "size_bytes": 6076,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/driver_tests.rs",
+      "sha256": "7cfbc2db646ff27be570796f8e839265104059e9f8a9ddd2218862f885923f2d",
+      "size_bytes": 50736,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/driver_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection/reader.rs",
+      "sha256": "980d67ef3140d0c1a1540a2eff6c76668e9d935650a1ba750f36c7e5cedb571c",
+      "size_bytes": 1032,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection/reader.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session/connection.rs",
+      "sha256": "fba9784b50cb180aca7d7b91f80a5426819774a6bfc216bca121c7353bb31b3c",
+      "size_bytes": 15873,
+      "source_path": "codex-rs/code-mode/src/remote_session/connection.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session.rs",
+      "sha256": "1ad3df483d4c5684106225b7dec47d5dfc160733ec59285733d2e3775623c351",
+      "size_bytes": 17861,
+      "source_path": "codex-rs/code-mode/src/remote_session.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/remote_session_tests.rs",
+      "sha256": "4ec3e14bb9e635f49d7f79b60bbed92c7136effd7f7d071ef016360d012ab0c2",
+      "size_bytes": 3772,
+      "source_path": "codex-rs/code-mode/src/remote_session_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/runtime/callbacks.rs",
+      "sha256": "63b831e4cb19cfeffa9a482fc9b4a6821f95c9bab22f4d7ecb0e7578689fe8be",
+      "size_bytes": 14026,
+      "source_path": "codex-rs/code-mode/src/runtime/callbacks.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/runtime/globals.rs",
+      "sha256": "e62df37ddd8d36f3f799d3a2713b225661e3706dcaf2fe97b3cf183427903c07",
+      "size_bytes": 6595,
+      "source_path": "codex-rs/code-mode/src/runtime/globals.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/runtime/mod.rs",
+      "sha256": "ff90963d5e3d195d497d3b7eafe04237944b41fd3afb551bbda86aa1a682fa2f",
+      "size_bytes": 18689,
+      "source_path": "codex-rs/code-mode/src/runtime/mod.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/runtime/module_loader.rs",
+      "sha256": "ce8fd3215e76341ad79a77b9ac257f651273ca95bb1a07850ccfeffa8db98a56",
+      "size_bytes": 8301,
+      "source_path": "codex-rs/code-mode/src/runtime/module_loader.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/runtime/timers.rs",
+      "sha256": "f8e56c34651d0195c39999271e08609f67367c858f385b1969a7f0248497a063",
+      "size_bytes": 4636,
+      "source_path": "codex-rs/code-mode/src/runtime/timers.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/runtime/value.rs",
+      "sha256": "0a6f72f02547793eff39284ca8019dbbabddc2aaebd975ee2bc34a42ca4c7755",
+      "size_bytes": 12237,
+      "source_path": "codex-rs/code-mode/src/runtime/value.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/service.rs",
+      "sha256": "161ec2480222db8454958752dc0b6611ad0555ab12972a51fa4a0790098b578f",
+      "size_bytes": 17600,
+      "source_path": "codex-rs/code-mode/src/service.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/service_contract_tests.rs",
+      "sha256": "11bf367eb75200377b227b3bdd3b1b6ed095c285f70497c68b242a6f2d1eb61c",
+      "size_bytes": 15667,
+      "source_path": "codex-rs/code-mode/src/service_contract_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/service_tests.rs",
+      "sha256": "f1bccfa50db96272b1047b7c3812856aeb91c9d174e9a71fc967219be2f1a71c",
+      "size_bytes": 32251,
+      "source_path": "codex-rs/code-mode/src/service_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/session_runtime/mod.rs",
+      "sha256": "e0f9e74ca5fdf60c4389f3ac034c740b5c6e4fb97738d72419e6afc4d65734e1",
+      "size_bytes": 14220,
+      "source_path": "codex-rs/code-mode/src/session_runtime/mod.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/session_runtime/tests.rs",
+      "sha256": "ee8748b62610cba059eb2cd6bcbf5548de042eae9b716bd6f0557c4d3d9c8953",
+      "size_bytes": 7890,
+      "source_path": "codex-rs/code-mode/src/session_runtime/tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/session_runtime/types.rs",
+      "sha256": "30b92086f42d5eee5b5e1d053b07563219d8dcd18fecad9e38c663c1ad194fe2",
+      "size_bytes": 5037,
+      "source_path": "codex-rs/code-mode/src/session_runtime/types.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/src/v8_init.rs",
+      "sha256": "ab4994f622fac79c600c41a5a768f7f8cc845fe963a1c592b960d0c97e6148ac",
+      "size_bytes": 2660,
+      "source_path": "codex-rs/code-mode/src/v8_init.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode/tests/jit.rs",
+      "sha256": "b499e061b11c9dbad0b1051e199c3944b8e66edb76ffe8503949e8a09e5d72d9",
+      "size_bytes": 1213,
+      "source_path": "codex-rs/code-mode/tests/jit.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/BUILD.bazel",
+      "sha256": "d9f4ea80f36db7c69d44eb0c6ebd93f9c7a02a8ee224f141ac849c4db4cb10f4",
+      "size_bytes": 131,
+      "source_path": "codex-rs/code-mode-host/BUILD.bazel"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/Cargo.toml",
+      "sha256": "93e66083bc37594d4cad1e0cbb9852a67c474733c38305ba41831dc4d4d44388",
+      "size_bytes": 765,
+      "source_path": "codex-rs/code-mode-host/Cargo.toml"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/src/delegate.rs",
+      "sha256": "3e4267cc9a293bbc7567ba39ecb282966f5d89e63e06026797d312614641f8b7",
+      "size_bytes": 3512,
+      "source_path": "codex-rs/code-mode-host/src/delegate.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/src/host_tests.rs",
+      "sha256": "93c89ff2d431429762f9504909ffc7000c008917f0f7090a74bba74bc00cfb36",
+      "size_bytes": 17310,
+      "source_path": "codex-rs/code-mode-host/src/host_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/src/lib.rs",
+      "sha256": "057c948b3f60df606f1decb6aeb883fe0278a399077231b83aa7cf004dccc0d7",
+      "size_bytes": 31207,
+      "source_path": "codex-rs/code-mode-host/src/lib.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/src/main.rs",
+      "sha256": "ca0fc3763f58d8429758dafcaa05a00ab58eb5f7116cfe94b68a99af7e606296",
+      "size_bytes": 212,
+      "source_path": "codex-rs/code-mode-host/src/main.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/src/peer.rs",
+      "sha256": "7d890ce77131af9d730a3a3c8b78a8b49defc817bcc82e26adb93bb8eb5e0616",
+      "size_bytes": 19317,
+      "source_path": "codex-rs/code-mode-host/src/peer.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/src/peer_tests.rs",
+      "sha256": "170c4c44968c1242504e92e1e9d88f2ed37eed99ffb2ae1987c63de85b7ffe36",
+      "size_bytes": 3216,
+      "source_path": "codex-rs/code-mode-host/src/peer_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-host/tests/stdio.rs",
+      "sha256": "d03db7771faa8445ae53a4073220c8ee08096d7b0b8066b58031ec354a027964",
+      "size_bytes": 27784,
+      "source_path": "codex-rs/code-mode-host/tests/stdio.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/BUILD.bazel",
+      "sha256": "6bf0d8114f5d83da7fab41833bafee0af59d5f9ac2a6bbf9d41a529b99cc70ae",
+      "size_bytes": 139,
+      "source_path": "codex-rs/code-mode-protocol/BUILD.bazel"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/Cargo.toml",
+      "sha256": "f8a1ff683dd8449ee98ca9e540ad60cebb557c085e98031a900da3036bba8202",
+      "size_bytes": 608,
+      "source_path": "codex-rs/code-mode-protocol/Cargo.toml"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/description.rs",
+      "sha256": "b23719ac5f14bf3b14e472348a1fc4eee54d7f181befc44394d163885ff8c012",
+      "size_bytes": 42060,
+      "source_path": "codex-rs/code-mode-protocol/src/description.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/codec.rs",
+      "sha256": "cf1945051c300a97c7604aad3bb37335ca3891eba1d71a8a7c004c1011974f1f",
+      "size_bytes": 4190,
+      "source_path": "codex-rs/code-mode-protocol/src/host/codec.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/codec_tests.rs",
+      "sha256": "18bfecb2bd15762f1c891b84b21f4f256782d9a6f82939df014be84ae26a479f",
+      "size_bytes": 3233,
+      "source_path": "codex-rs/code-mode-protocol/src/host/codec_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/error.rs",
+      "sha256": "9522a7c943971e6d75b9cae38c5deaaef1eb540ac6e72e83efd9b9d27068c095",
+      "size_bytes": 682,
+      "source_path": "codex-rs/code-mode-protocol/src/host/error.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/host_tests.rs",
+      "sha256": "12284018499b6378c239e3639f00d9595351ff525aacef0946d803044db02a61",
+      "size_bytes": 24260,
+      "source_path": "codex-rs/code-mode-protocol/src/host/host_tests.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/message.rs",
+      "sha256": "0a797bdf2150f9237a946b25b88a32c972275ce883a59552db8e7db61178a55d",
+      "size_bytes": 8748,
+      "source_path": "codex-rs/code-mode-protocol/src/host/message.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/mod.rs",
+      "sha256": "f6ad460220a3fc86e4369ff67e4a51ac3b1bfdaea5b171ff91e591a23db6c58a",
+      "size_bytes": 1781,
+      "source_path": "codex-rs/code-mode-protocol/src/host/mod.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/payload.rs",
+      "sha256": "4277ac9645e78e270e0ac84ac2629f74d8d3f309cb1314a2e0beba793c306648",
+      "size_bytes": 12490,
+      "source_path": "codex-rs/code-mode-protocol/src/host/payload.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/host/types.rs",
+      "sha256": "4c973fddadc29527c0a4985c80becac4d80d35d59a7e7f0a7c02bc98e0dd03e9",
+      "size_bytes": 8990,
+      "source_path": "codex-rs/code-mode-protocol/src/host/types.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/lib.rs",
+      "sha256": "d46fed942dc89b9538ae39151f9d39e4401ec7603d29a2ec77762d585c98cc3c",
+      "size_bytes": 1698,
+      "source_path": "codex-rs/code-mode-protocol/src/lib.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/response.rs",
+      "sha256": "7ecf697e2d3ed1e588ff2e0ac26e4a675f6c5e099723076465e99ba7d515d6ce",
+      "size_bytes": 689,
+      "source_path": "codex-rs/code-mode-protocol/src/response.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/runtime.rs",
+      "sha256": "73c7c4071840139ca2851ea61d45cd36057b0d6c2350377216208eff5ae7acb5",
+      "size_bytes": 2432,
+      "source_path": "codex-rs/code-mode-protocol/src/runtime.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/session.rs",
+      "sha256": "acc4ede62a619dd137f59fa33f8098a0b56da0abc6bb635fd948f156837a4fc5",
+      "size_bytes": 4031,
+      "source_path": "codex-rs/code-mode-protocol/src/session.rs"
+    },
+    {
+      "classification": "patched_upstream_tree",
+      "path": "codex-rs/code-mode-protocol/src/session_tests.rs",
+      "sha256": "187015706f3cc6bee0cd8a15208dfddcb0a80d97f7ac143624c584e6fe033d0e",
+      "size_bytes": 590,
+      "source_path": "codex-rs/code-mode-protocol/src/session_tests.rs"
+    },
+    {
+      "classification": "local_compatibility_scaffold",
+      "path": "codex-rs/protocol/Cargo.toml",
+      "sha256": "993bfb525116a801f0d8cdbcc000b1c426f0b7e3c51b09747f5cf03a443f7baa",
+      "size_bytes": 177,
+      "source_path": null
+    },
+    {
+      "classification": "local_compatibility_scaffold",
+      "path": "codex-rs/protocol/src/lib.rs",
+      "sha256": "055a5946b36cc369e8c7323b4fb376f4a4d1c403b52b58779cf0efece69bc011",
+      "size_bytes": 44,
+      "source_path": null
+    },
+    {
+      "classification": "exact_upstream_compatibility_source",
+      "path": "codex-rs/protocol/src/tool_name.rs",
+      "sha256": "7167eb9ec9f38ddd52953f67fe00727366116d1109d5f7c6d8467a880252bb65",
+      "size_bytes": 1915,
+      "source_path": "codex-rs/protocol/src/tool_name.rs"
+    },
+    {
+      "classification": "exact_upstream_test_helper",
+      "path": "codex-rs/utils/cargo-bin/BUILD.bazel",
+      "sha256": "9a06b3ef2eaec07c5baded16a7ab5ec96cf443d1e471530f0f76d895aea0f872",
+      "size_bytes": 438,
+      "source_path": "codex-rs/utils/cargo-bin/BUILD.bazel"
+    },
+    {
+      "classification": "exact_upstream_test_helper",
+      "path": "codex-rs/utils/cargo-bin/Cargo.toml",
+      "sha256": "eecb409357a98472df8a81d9fd1a25902b967433f4df3403cf213f07e68f8786",
+      "size_bytes": 293,
+      "source_path": "codex-rs/utils/cargo-bin/Cargo.toml"
+    },
+    {
+      "classification": "exact_upstream_test_helper",
+      "path": "codex-rs/utils/cargo-bin/README.md",
+      "sha256": "19bb1468c2c7c2609758bbc9b1e8ced93b95311933c2bdcd662b979b2f546ec1",
+      "size_bytes": 1036,
+      "source_path": "codex-rs/utils/cargo-bin/README.md"
+    },
+    {
+      "classification": "exact_upstream_test_helper",
+      "path": "codex-rs/utils/cargo-bin/repo_root.marker",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "size_bytes": 1,
+      "source_path": "codex-rs/utils/cargo-bin/repo_root.marker"
+    },
+    {
+      "classification": "exact_upstream_test_helper",
+      "path": "codex-rs/utils/cargo-bin/src/lib.rs",
+      "sha256": "54c4d9cdc972f7b6e2401178bd294c7329798acf01fd3226c9da5e575a907460",
+      "size_bytes": 7999,
+      "source_path": "codex-rs/utils/cargo-bin/src/lib.rs"
+    }
+  ],
+  "preserved_trees": [
+    "codex-rs/code-mode-host",
+    "codex-rs/code-mode",
+    "codex-rs/code-mode-protocol"
+  ],
+  "prototype": {
+    "cargo": "1.94.1 (29ea6fb6a 2026-03-24)",
+    "platform": "aarch64-apple-darwin",
+    "release_binary_sha256": "b13dd2df260404f0a39e781b0756359f5a9750bb159836e6e3bd90d7d0878aae",
+    "release_binary_size_bytes": 72583864,
+    "rustc": "1.94.1 (e408947bf 2026-03-25)",
+    "standalone_lock_sha256": "ad36b876206bf917d3519d621738e5c225ab90b6417d3dac28d88c05c8447a98"
+  },
+  "schema_version": 1,
+  "source": {
+    "copied_checkout_commit": "808d3c2702ce8eae007c457aa930e7c3b68dd5f6",
+    "license": "Apache-2.0",
+    "patch_baseline_commit": "b5748e6e3cbc3c9831f84aa016486721b4923d1c",
+    "patch_path": "vendor/codex/codex-code-mode-host.patch",
+    "patch_sha256": "61f8a64ab08a302f7321ac4f1210c4ee1ff3abf4df3b064a6fb588b431a5b024",
+    "repository": "https://github.com/openai/codex"
+  },
+  "structural_deviations": [
+    {
+      "path": "codex-rs/Cargo.toml",
+      "reason": "standalone workspace with exact direct dependency pins"
+    },
+    {
+      "path": "codex-rs/Cargo.lock",
+      "reason": "standalone dependency closure"
+    },
+    {
+      "path": "codex-rs/protocol/Cargo.toml",
+      "reason": "minimal compatibility crate manifest"
+    },
+    {
+      "path": "codex-rs/protocol/src/lib.rs",
+      "reason": "exports sole required upstream ToolName API"
+    },
+    {
+      "path": "codex-rs/protocol/src/tool_name.rs",
+      "reason": "exact upstream source retained without broad codex-protocol crate"
+    },
+    {
+      "path": "codex-rs/utils/cargo-bin",
+      "reason": "exact upstream helper retained so upstream integration-test layout is preserved"
+    }
+  ]
+}

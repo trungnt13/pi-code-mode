@@ -14,7 +14,10 @@
 	},
 	"files": [
 		"src",
-		"vendor",
+		"vendor/codex/LICENSE",
+		"vendor/codex/NOTICE",
+		"vendor/codex/codex-code-mode-host.patch",
+		"vendor/codex/code-mode-host",
 		"ARCHITECTURE.md",
 		"LICENSE",
 		"PROVENANCE.md",
@@ -33,6 +36,7 @@
 		"lint": "biome check src",
 		"verify:package": "node scripts/verify-pi-package.mjs",
 		"verify:installed": "node scripts/verify-pi-package.mjs --installed",
+		"sync:host": "node scripts/sync-code-mode-host.mjs",
 		"check": "npm run lint && npm run typecheck && npm run verify:package",
 		"format": "biome format --write src"
 	},

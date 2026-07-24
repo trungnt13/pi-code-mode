@@ -1,0 +1,47 @@
+[workspace]
+members = [
+    "code-mode-host",
+    "code-mode",
+    "code-mode-protocol",
+    "protocol",
+    "utils/cargo-bin",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Local crates retain upstream package names and paths.
+codex-code-mode = { path = "code-mode" }
+codex-code-mode-protocol = { path = "code-mode-protocol" }
+codex-protocol = { path = "protocol" }
+codex-utils-cargo-bin = { path = "utils/cargo-bin" }
+
+# Direct registry dependencies are pinned to versions in upstream Cargo.lock.
+anyhow = "=1.0.103"
+assert_cmd = "=2.1.2"
+deno_core_icudata = "=0.77.0"
+futures = { version = "=0.3.31", default-features = false }
+pretty_assertions = "=1.4.1"
+runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
+serde = { version = "=1.0.228", features = ["rc"] }
+serde_json = "=1.0.149"
+tempfile = "=3.27.0"
+thiserror = "=2.0.18"
+tokio = "=1.52.3"
+tokio-util = "=0.7.18"
+tracing = "=0.1.44"
+v8 = "=149.2.0"
+
+[workspace.lints]
+rust = {}
+
+[profile.release]
+lto = "thin"
+debug = "line-tables-only"
+split-debuginfo = "off"
+strip = false
+codegen-units = 4
