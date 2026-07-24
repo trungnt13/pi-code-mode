@@ -52,6 +52,19 @@ same verified bytes. Command requires no concurrent package edits and
 revalidates full package preimage before success. Candidate is never merged,
 patched, locked, built, or activated automatically.
 
+Agent-as-software workflow lives with host source:
+`vendor/codex/code-mode-host/UPDATE_WITH_AGENT.md` is sole task instruction and
+`vendor/codex/code-mode-host/run-agent-update.sh` validates target checkout,
+creates isolated review output, and runs instruction through Codex CLI:
+
+```sh
+vendor/codex/code-mode-host/run-agent-update.sh \
+  /path/to/codex <40-hex-commit>
+```
+
+Workflow is source-repository maintenance software and is excluded from package
+payload.
+
 Patch keeps V8's process-wide platform worker count CPU-aware and bounded to four. Host uses a
 current-thread Tokio runtime with two blocking workers, matching its stdin and serialized stdout
 consumers. New blocking-pool consumers require a cap review and fresh resource, cancellation,
@@ -93,4 +106,12 @@ not module-resolution inputs.
   and `src/native/stream.ts`, narrowed to `openai-codex` +
   `openai-codex-responses` + `gpt-5.6*`.
 
-Transport behavior was cross-checked against published `@earendil-works/pi-ai` 0.81.1 distribution (`dist/api/openai-codex-responses.js` and `dist/openai-prompt-cache.js`): endpoint construction, OAuth account claim, required headers, session headers, SSE framing, timeout, retry, and callback behavior. Package implements this boundary directly with bounded platform `fetch`; it has no direct OpenAI SDK dependency. It deliberately excludes published WebSocket and zstd alternatives. Runtime uses only published Pi APIs.
+Transport behavior was cross-checked against published `@earendil-works/pi-ai` 0.81.1 distribution (`dist/api/openai-codex-responses.js` and `dist/openai-prompt-cache.js`): endpoint construction, OAuth account claim, required headers, session headers, SSE framing, timeout, retry, and callback behavior. Package implements this boundary directly with bounded platform `fetch`; it has no direct OpenAI SDK dependency. It deliberately excludes published WebSocket and zstd alternatives. Runtime imports only public Pi APIs.
+
+`src/native/transform-messages.ts` copies
+`packages/ai/src/api/transform-messages.ts` from `@earendil-works/pi-ai`
+0.81.1, adapting its type import to Pi's public package entry point and adding
+one behavior-equivalent loop syntax change for this package's stricter
+TypeScript settings.
+Upstream source SHA-256:
+`cf309c00b943bc0a90ccaabb185730a3f27a3c92de6696ada3155b0185904161`.

@@ -9,7 +9,8 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ModelRegistry, ProviderConfig } from "@earendil-works/pi-coding-agent";
-import { NATIVE_MAX_PROVIDER_ERROR_BYTES } from "../native-limits.js";
+import { NATIVE_MAX_PROVIDER_ERROR_BYTES } from "../constants.js";
+import { nativeErrorText } from "./error-text.js";
 
 export type ProviderSnapshot =
 	| { kind: "none" }
@@ -179,7 +180,7 @@ function failRelay(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "error",
-		errorMessage: boundedText(error instanceof Error ? error.message : String(error), NATIVE_MAX_PROVIDER_ERROR_BYTES),
+		errorMessage: boundedText(nativeErrorText(error), NATIVE_MAX_PROVIDER_ERROR_BYTES),
 		timestamp: Date.now(),
 	};
 	relay.push({ type: "error", reason: "error", error: output });

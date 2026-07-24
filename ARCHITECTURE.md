@@ -395,7 +395,8 @@ reason, settles pending read, removes listener, and releases reader lock.
 Public native hard maxima are: 100,000 events; 4,096 output items; 8,000 IDs; 1,024 bytes per ID;
 4 MiB per line/event/item buffer; 16 MiB raw stream, accumulated content, and request; 16 KiB JWT
 and provider error; 256 headers and 64 KiB header bytes; 8 retries. These are exported from
-`src/native-limits.ts` and max-plus-one probed outside committed source.
+`src/constants.ts`, exposed publicly by `src/index.ts`, and max-plus-one probed outside committed
+source.
 
 ## 9. Host trust, provisioning, and protocol
 

@@ -11,7 +11,6 @@ import {
 	type Model,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import {
 	NATIVE_MAX_BUFFER_BYTES,
 	NATIVE_MAX_EVENTS,
@@ -25,9 +24,11 @@ import {
 	NATIVE_MAX_REQUEST_BYTES,
 	NATIVE_MAX_RETRIES,
 	NATIVE_MAX_STREAM_BYTES,
-} from "../native-limits.js";
+} from "../constants.js";
 import { assertJsonStructure, encodeJsonBounded } from "../runtime/frame-codec.js";
 import { applyNativeExecContract } from "./contract.js";
+import { nativeErrorText } from "./error-text.js";
+import { transformMessages } from "./transform-messages.js";
 
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const ACCOUNT_CLAIM = "https://api.openai.com/auth";
@@ -272,10 +273,7 @@ async function runNativeRequest(
 		stream.end();
 	} catch (error) {
 		output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-		output.errorMessage = boundedText(
-			error instanceof Error ? error.message : String(error),
-			NATIVE_MAX_PROVIDER_ERROR_BYTES,
-		);
+		output.errorMessage = boundedText(nativeErrorText(error), NATIVE_MAX_PROVIDER_ERROR_BYTES);
 		stream.push({ type: "error", reason: output.stopReason, error: output });
 		stream.end();
 	}

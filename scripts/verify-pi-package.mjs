@@ -78,6 +78,10 @@ function assertPackedFiles() {
 		`${hostRoot}/codex-rs/protocol/src/tool_name.rs`,
 		`${hostRoot}/codex-rs/utils/cargo-bin/src/lib.rs`,
 	];
+	const sourceOnlyHostFiles = new Set([
+		`${hostRoot}/UPDATE_WITH_AGENT.md`,
+		`${hostRoot}/run-agent-update.sh`,
+	]);
 	const required = command("git", [
 		"ls-files",
 		"--",
@@ -90,7 +94,7 @@ function assertPackedFiles() {
 		"THIRD_PARTY_NOTICES.md",
 	])
 		.split("\n")
-		.filter(Boolean);
+		.filter((path) => path && !sourceOnlyHostFiles.has(path));
 	for (const path of [...required, "package.json"]) {
 		if (!packed.has(path)) fail(`npm package payload is missing ${path}`);
 	}
@@ -98,6 +102,7 @@ function assertPackedFiles() {
 		if (!packed.has(path)) fail(`npm package payload is missing standalone host source ${path}`);
 	}
 	for (const path of packed) {
+		if (sourceOnlyHostFiles.has(path)) fail(`npm package payload unexpectedly contains source-only workflow ${path}`);
 		if (path === "dist" || path.startsWith("dist/")) fail(`npm package payload unexpectedly contains ${path}`);
 		if (
 			path.includes("/target/") ||

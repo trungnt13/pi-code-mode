@@ -1,4 +1,4 @@
-import { NATIVE_MAX_ID_BYTES, NATIVE_MAX_OUTPUT_ITEMS } from "../native-limits.js";
+import { NATIVE_MAX_ID_BYTES, NATIVE_MAX_OUTPUT_ITEMS } from "../constants.js";
 
 export const CODE_MODE_EXEC_GRAMMAR = String.raw`
 start: pragma_source | plain_source
