@@ -439,7 +439,7 @@ export async function processNativeEvents(
 			const itemType = requireString(item.type, "output item type");
 			const itemId = uniqueWireId(item.id, `${itemType} item`, itemIds, budget);
 			if (itemType === "custom_tool_call") {
-				validateItemStatus(item, "added", []);
+				validateItemStatus(item, "added", ["in_progress"]);
 				rejectToolIdDelimiter(itemId, "custom item");
 				const callId = uniqueWireId(item.call_id, "custom call", callIds, budget);
 				rejectToolIdDelimiter(callId, "custom call");
@@ -744,7 +744,7 @@ export async function processNativeEvents(
 			if (!state) throw new Error(`Native completion targets unknown output index ${outputIndex}`);
 			const item = asRecord(event.item, "completed output item");
 			if (state.kind === "custom") {
-				validateItemStatus(item, "completed", []);
+				validateItemStatus(item, "completed", ["completed"]);
 				if (
 					item.type !== "custom_tool_call" ||
 					item.id !== state.itemId ||

@@ -1,6 +1,6 @@
 # Pi code-mode architecture
 
-Status: runtime and package-owned source installer implemented and locally validated on Apple arm64; live paid GPT-5.6 gate remains unrun
+Status: runtime and package-owned source installer implemented and locally validated on Apple arm64; live GPT-5.6 validation is mandatory for each reviewed revision and its evidence is reported externally at release
 
 Target: published `@earendil-works/pi-coding-agent` 0.81.1  
 Package: `pi-code-mode`
@@ -363,9 +363,10 @@ tool calls and unsupported incomplete states fail; incomplete message and reason
 the lifecycle matrix below. Hot deltas use
 bounded chunk arrays joined once at completion.
 
-Output-item lifecycle status is type-specific. Custom `exec` requires status absent on added and
-done. Function calls allow absent/`in_progress` on add and absent/`completed` on done; explicit
-incomplete functions reject. Messages require `in_progress` on add and allow
+Output-item lifecycle status is type-specific. Custom `exec` accepts the SDK-declared statusless
+form and the observed ChatGPT backend's explicit `in_progress` on add and `completed` on done.
+Function calls allow absent/`in_progress` on add and absent/`completed` on done; explicit
+incomplete custom and function calls reject. Messages require `in_progress` on add and allow
 `completed`/`incomplete` on done. Reasoning allows absent/`in_progress` on add and
 absent/`completed`/`incomplete` on done. Hosted web search retains required `in_progress` then
 `completed`. Function-arguments done repeats original function name. An explicitly incomplete item
