@@ -1,4 +1,18 @@
-# pi-code-mode
+# pi-code-mode-deprecated
+
+> [!CAUTION]
+> **Deprecated and archived as of July 25, 2026.** This project follows an
+> architecture that is no longer considered correct or supportable. It is
+> unmaintained and will receive no updates, bug fixes, security fixes, support,
+> or compatibility work. Do not install it, depend on it, or use it as the basis
+> for new development. The repository and documentation remain available only
+> as a historical reference.
+
+## Historical documentation
+
+Everything below describes the project before it was deprecated. It is retained
+for reference and does not represent a supported installation or maintenance
+path.
 
 Standalone, bounded JavaScript code mode for Pi 0.81.1. Its tool policy matches
 Codex `CodeModeOnly`, not mixed `CodeMode`. Extension is off by default. When
@@ -14,19 +28,11 @@ Disabled load imports only inert facade and dependency-free constants. UUIDs, sc
 factories, controller, host code, and provider bridge load when `/code-mode` first enables the
 extension. Before that, status, model change, and shutdown remain lightweight no-ops.
 
-## Install
+## Historical installation (do not use)
 
-Install directly from GitHub:
-
-```sh
-pi install git:github.com/trungnt13/pi-code-mode
-```
-
-Pin a tag or commit when reproducibility matters:
-
-```sh
-pi install git:github.com/trungnt13/pi-code-mode@<tag-or-commit>
-```
+The former remote installation commands are intentionally omitted. This
+repository is archived and unsupported; existing installations should be
+removed rather than updated from this source.
 
 Pi loads `src/index.ts` directly through its TypeScript extension loader. No
 manual dependency install or build is required. Restart Pi or run `/reload`,
